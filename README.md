@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Voxcut
 
-## Getting Started
+AI-powered video editing for prompt-driven trimming and cleanup workflows.
 
-First, run the development server:
+## Overview
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+Voxcut is a lightweight editor for transforming raw video into tighter, cleaner cuts using transcript-aware prompts. Upload a video, describe the edit you want, and let the app generate a structured cut plan and rendered output.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Features
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- MP4 upload and transcript generation
+- Prompt-to-edit planning for trimming silence and unwanted sections
+- FFmpeg-based render pipeline for exportable edits
+- Project-scoped local storage for media and metadata
+- Prompt logging, history, and feedback tracking
+- Architecture ready for captions, multi-clip assembly, and advanced AI editing stages
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Stack
 
-## Learn More
+- Next.js
+- React
+- TypeScript
+- Tailwind CSS
+- FFmpeg
+- Zod validation
 
-To learn more about Next.js, take a look at the following resources:
+## Project Status
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Phase 1 is complete and focuses on the upload, transcription, and prompt-to-cut workflow. The project is structured to extend into captions, multi-clip editing, and richer AI-assisted editing features.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Maintainer
 
-## Deploy on Vercel
+Hiten Sharma
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## License
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+This project is licensed under the Apache License, Version 2.0. See the LICENSE file for details.
