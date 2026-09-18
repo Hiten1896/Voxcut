@@ -20,6 +20,10 @@
 # production
 /build
 
+# local media and generated project data
+/storage/
+/sample-video.mp4
+
 # misc
 .DS_Store
 *.pem
