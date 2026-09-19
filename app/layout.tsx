@@ -22,6 +22,14 @@ export const metadata: Metadata = {
     template: "%s | Voxcut",
   },
   description: "Secure AI-powered editor for repurposing raw video into cleaner, faster, publish-ready clips.",
+  icons: {
+    icon: [
+      { url: "/favicon/favicon.ico", sizes: "32x32" },
+      { url: "/favicon/favicon.svg", type: "image/svg+xml" },
+    ],
+    shortcut: "/favicon/favicon.ico",
+    apple: [{ url: "/favicon/favicon-180.png", sizes: "180x180", type: "image/png" }],
+  },
   robots: {
     index: false,
     follow: false,
@@ -32,10 +40,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <head>
-        <link
-          rel="stylesheet"
-          href="https://cdnjs.cloudflare.com/ajax/libs/@tabler/icons-webfont/3.31.0/tabler-icons.min.css"
-        />
+        <link rel="icon" href="/favicon/favicon.ico" />
+        <link rel="icon" href="/favicon/favicon.svg" type="image/svg+xml" />
+        <link rel="apple-touch-icon" href="/favicon/favicon-180.png" />
       </head>
       <body className="min-h-full bg-slate-950 text-slate-50">{children}</body>
     </html>

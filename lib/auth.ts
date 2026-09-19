@@ -229,8 +229,8 @@ export function clearAuthCookie(response: NextResponse): NextResponse {
   return response;
 }
 
-export function getSessionFromServerCookies(): AuthUser | null {
-  const cookieStore = cookies();
+export async function getSessionFromServerCookies(): Promise<AuthUser | null> {
+  const cookieStore = await cookies();
   const sessionToken = cookieStore.get(AUTH_COOKIE_NAME)?.value ?? null;
   const session = verifySessionToken(sessionToken);
 

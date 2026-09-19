@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import type { Transcript } from "@/lib/types";
+import { getCurrentUser } from "@/lib/auth";
 import { jobQueue } from "@/lib/job-queue";
 import { createPromptLog } from "@/lib/prompt-log";
 import { storage } from "@/lib/storage";
@@ -10,9 +11,13 @@ import { renderTrimmedVideo } from "@/lib/render";
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  const currentUser = await getCurrentUser(request);
+  if (!currentUser) {
+    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+  }
+
   const body = (await request.json()) as {
     videoId: string;
-    userId?: string;
     projectId?: string;
     prompt: string;
   };
@@ -21,8 +26,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing videoId or prompt." }, { status: 400 });
   }
 
-  const userId = body.userId ?? "Hiten1896";
-  const projectId = body.projectId ?? "voxcut-project";
+  const userId = currentUser.id;
+  const projectId = String(body.projectId ?? `project-${userId.slice(0, 8)}`).trim();
   const assetPaths = storage.getProjectAssetKeys(userId, projectId, body.videoId);
   const transcript = await storage.readJson<Transcript>(assetPaths.transcriptKey);
   const rawPlan = generateCutPlanFromPrompt(body.prompt, transcript);

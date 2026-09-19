@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { isValidProjectIdentifier, isValidStorageKey } from "./security.ts";
+import { isValidProjectIdentifier, isValidStorageKey } from "./security";
 
 test("accepts valid user and project ids", () => {
   assert.equal(isValidProjectIdentifier("demo-user"), true);

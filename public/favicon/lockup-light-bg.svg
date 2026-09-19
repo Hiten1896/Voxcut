@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 48" width="260" height="48">
+  <rect x="0" y="8" width="32" height="32" rx="7" fill="#eff6ff"/>
+  <g transform="translate(0,8)" stroke="#2563eb" stroke-width="1.8" fill="none" stroke-linecap="round">
+    <line x1="6" y1="13" x2="6" y2="19"/>
+    <line x1="9" y1="10" x2="9" y2="22"/>
+    <line x1="12" y1="14" x2="12" y2="18"/>
+  </g>
+  <g transform="translate(0,8)" stroke="#2563eb" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="17.5" cy="12.5" r="2.6"/>
+    <circle cx="17.5" cy="19.5" r="2.6"/>
+    <line x1="19.6" y1="10.6" x2="27" y2="21.4"/>
+    <line x1="19.6" y1="21.4" x2="27" y2="10.6"/>
+  </g>
+  <text x="44" y="32" font-family="'Geist', 'Inter', -apple-system, 'Segoe UI', Arial, sans-serif" font-weight="600" font-size="24" fill="#0f172a">Vox<tspan fill="#2563eb">cut</tspan></text>
+</svg>
