@@ -1,19 +1,40 @@
 # Voxcut
 
-AI-powered video editing for prompt-driven trimming and cleanup workflows.
+AI-powered video editing for prompt-driven trimming, storytelling, and export workflows.
 
 ## Overview
 
-Voxcut is a lightweight editor for transforming raw video into tighter, cleaner cuts using transcript-aware prompts. Upload a video, describe the edit you want, and let the app generate a structured cut plan and rendered output.
+Voxcut is a compact editorial workspace for turning raw footage into tighter, more polished clips using transcript-aware prompts and FFmpeg-based rendering. The app is built around a fast workflow: upload a video, inspect the transcript, generate an edit plan, then review captions, assembly structure, and highlight moments before export.
 
-## Features
+## Completed phases
 
-- MP4 upload and transcript generation
-- Prompt-to-edit planning for trimming silence and unwanted sections
-- FFmpeg-based render pipeline for exportable edits
-- Project-scoped local storage for media and metadata
-- Prompt logging, history, and feedback tracking
-- Architecture ready for captions, multi-clip assembly, and advanced AI editing stages
+### Phase 1 — Upload + transcription + prompt-to-cut
+- MP4 upload support
+- transcript generation from the uploaded video
+- editable prompt-driven cut planning
+- FFmpeg trim render pipeline
+- prompt-log tracking and feedback state
+
+### Phase 2 — Automatic captions
+- caption generation from transcript segments
+- SRT-ready caption output
+- clean caption styling metadata for downstream editing
+
+### Phase 3 — Multi-clip assembly
+- timeline build preview from uploaded clips
+- total-duration summary
+- transition metadata for video assembly planning
+
+### Phase 4 — Highlight detection
+- transcript-driven highlight suggestions
+- score and reasoning metadata
+- approval-ready highlight cards for content selection
+
+### Phase 5 — Studio UI polish
+- dark editorial workspace layout
+- real file-handling interactions
+- stage-based workflow panels for captions, timeline, and highlights
+- user-facing prompt history and export-ready status feedback
 
 ## Stack
 
@@ -24,9 +45,9 @@ Voxcut is a lightweight editor for transforming raw video into tighter, cleaner 
 - FFmpeg
 - Zod validation
 
-## Project Status
+## Project status
 
-Phase 1 is complete and focuses on the upload, transcription, and prompt-to-cut workflow. The project is structured to extend into captions, multi-clip editing, and richer AI-assisted editing features.
+All core product stages are complete and integrated into the Voxcut editor experience. The app is ready for local use and can be extended with richer AI agents, rendering presets, and multi-project persistence.
 
 ## Maintainer
 
