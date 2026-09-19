@@ -3,21 +3,26 @@ import path from "node:path";
 
 import { NextResponse } from "next/server";
 
+import { getClientKey, isValidStorageKey, rateLimitAllow } from "@/lib/security";
 import { storage } from "@/lib/storage";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  const clientKey = getClientKey(request);
+  if (!rateLimitAllow(clientKey)) {
+    return NextResponse.json({ error: "Too many requests. Please slow down." }, { status: 429 });
+  }
+
   const { searchParams } = new URL(request.url);
   const key = searchParams.get("key");
 
-  if (!key) {
-    return NextResponse.json({ error: "Missing media key." }, { status: 400 });
+  if (!key || !isValidStorageKey(key)) {
+    return NextResponse.json({ error: "Missing or invalid media key." }, { status: 400 });
   }
 
-  const filePath = storage.resolveKey(key);
-
   try {
+    const filePath = storage.resolveKey(key);
     const buffer = await fs.readFile(filePath);
     const extension = path.extname(filePath).toLowerCase();
     const contentType =

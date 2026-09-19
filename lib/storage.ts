@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { isValidStorageKey } from "@/lib/security";
+
 export interface ProjectAssetPaths {
   root: string;
   videoDir: string;
@@ -44,6 +46,10 @@ export class LocalStorageAdapter implements StorageAdapter {
   }
 
   resolveKey(key: string) {
+    if (!isValidStorageKey(key)) {
+      throw new Error("Invalid storage key.");
+    }
+
     return path.join(this.rootDir, key.replace(/^\/+/g, ""));
   }
 

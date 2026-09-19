@@ -2,24 +2,40 @@ import { randomUUID } from "node:crypto";
 
 import { NextResponse } from "next/server";
 
+import { getCurrentUser } from "@/lib/auth";
 import { storage } from "@/lib/storage";
+import { getClientKey, isAllowedVideoUpload, isValidProjectIdentifier, rateLimitAllow } from "@/lib/security";
 import { transcribeVideo } from "@/lib/transcription";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
+  const currentUser = await getCurrentUser(request);
+  if (!currentUser) {
+    return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+  }
+
+  const clientKey = getClientKey(request);
+  if (!rateLimitAllow(clientKey)) {
+    return NextResponse.json({ error: "Too many upload requests. Please wait a moment and try again." }, { status: 429 });
+  }
+
   const formData = await request.formData();
   const file = formData.get("file");
-  const userId = String(formData.get("userId") ?? "demo-user");
-  const projectId = String(formData.get("projectId") ?? "demo-project");
+  const projectId = String(formData.get("projectId") ?? "default-project").trim();
+  const userId = currentUser.id;
+
+  if (!isValidProjectIdentifier(projectId) || !isValidProjectIdentifier(userId)) {
+    return NextResponse.json({ error: "Invalid user or project identifier." }, { status: 400 });
+  }
 
   if (!(file instanceof File)) {
     return NextResponse.json({ error: "A video file is required." }, { status: 400 });
   }
 
-  const fileName = file.name.toLowerCase();
-  if (!fileName.endsWith(".mp4")) {
-    return NextResponse.json({ error: "Only MP4 uploads are supported in this Phase 1 build." }, { status: 400 });
+  const validation = isAllowedVideoUpload(file);
+  if (!validation.ok) {
+    return NextResponse.json({ error: validation.reason }, { status: 400 });
   }
 
   const videoId = randomUUID();

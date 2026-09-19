@@ -21,8 +21,8 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing videoId or prompt." }, { status: 400 });
   }
 
-  const userId = body.userId ?? "demo-user";
-  const projectId = body.projectId ?? "demo-project";
+  const userId = body.userId ?? "Hiten1896";
+  const projectId = body.projectId ?? "voxcut-project";
   const assetPaths = storage.getProjectAssetKeys(userId, projectId, body.videoId);
   const transcript = await storage.readJson<Transcript>(assetPaths.transcriptKey);
   const rawPlan = generateCutPlanFromPrompt(body.prompt, transcript);

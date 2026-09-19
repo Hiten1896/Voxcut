@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Voxcut — Edit video by typing</title>
+<!-- Google Fonts & Material Symbols -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS CDN with plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "primary-fixed": "#acedff",
+            "surface-container-low": "#161c28",
+            "secondary-fixed-dim": "#2fd9f4",
+            "surface-bright": "#343946",
+            "tertiary-fixed-dim": "#7bd0ff",
+            "on-primary": "#003640",
+            "secondary-fixed": "#a2eeff",
+            "tertiary-fixed": "#c4e7ff",
+            "inverse-primary": "#00687a",
+            "on-tertiary-fixed": "#001e2c",
+            "primary": "#4cd7f6",
+            "surface-container-lowest": "#080e1a",
+            "on-error-container": "#ffdad6",
+            "on-primary-fixed": "#001f26",
+            "on-primary-container": "#00424f",
+            "on-tertiary": "#00354a",
+            "error-container": "#93000a",
+            "outline-variant": "#3d494c",
+            "on-error": "#690005",
+            "on-tertiary-fixed-variant": "#004c69",
+            "secondary": "#5de6ff",
+            "surface-container": "#1a202c",
+            "on-primary-fixed-variant": "#004e5c",
+            "on-secondary": "#00363e",
+            "primary-container": "#06b6d4",
+            "on-secondary-fixed-variant": "#004e5a",
+            "inverse-on-surface": "#2b303d",
+            "error": "#ffb4ab",
+            "surface-container-highest": "#2f3542",
+            "surface-tint": "#4cd7f6",
+            "surface-container-high": "#242a36",
+            "secondary-container": "#00cbe6",
+            "on-surface": "#dde2f3",
+            "on-secondary-container": "#00515d",
+            "on-tertiary-container": "#00415a",
+            "on-surface-variant": "#bcc9cd",
+            "tertiary": "#7bd0ff",
+            "surface-dim": "#0e131f",
+            "on-background": "#dde2f3",
+            "primary-fixed-dim": "#4cd7f6",
+            "surface": "#0e131f",
+            "on-secondary-fixed": "#001f25",
+            "outline": "#869397",
+            "inverse-surface": "#dde2f3",
+            "surface-variant": "#2f3542",
+            "tertiary-container": "#23b2ec",
+            "background": "#0e131f"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.25rem",
+            "lg": "0.5rem",
+            "xl": "0.75rem",
+            "full": "9999px"
+          },
+          "spacing": {
+            "gutter": "1rem",
+            "space-xs": "0.25rem",
+            "margin": "1rem",
+            "space-sm": "0.5rem",
+            "space-xl": "2rem",
+            "space-lg": "1.25rem",
+            "space-md": "0.75rem"
+          },
+          "fontFamily": {
+            "headline-sm": ["Geist"],
+            "body-md": ["Geist"],
+            "label-md": ["Geist"],
+            "headline-lg-mobile": ["Geist"],
+            "label-lg": ["Geist"],
+            "code-mono": ["JetBrains Mono"],
+            "body-sm": ["Geist"],
+            "headline-lg": ["Geist"],
+            "display": ["Geist"],
+            "headline-md": ["Geist"],
+            "body-lg": ["Geist"],
+            "label-sm": ["Geist"]
+          },
+          "fontSize": {
+            "headline-sm": ["16px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "500" }],
+            "body-md": ["14px", { "lineHeight": "20px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "label-md": ["12px", { "lineHeight": "16px", "letterSpacing": "0.01em", "fontWeight": "500" }],
+            "headline-lg-mobile": ["24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "label-lg": ["14px", { "lineHeight": "20px", "letterSpacing": "0em", "fontWeight": "500" }],
+            "code-mono": ["12px", { "lineHeight": "16px", "letterSpacing": "-0.01em", "fontWeight": "400" }],
+            "body-sm": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "headline-lg": ["30px", { "lineHeight": "38px", "letterSpacing": "-0.02em", "fontWeight": "600" }],
+            "display": ["40px", { "lineHeight": "48px", "letterSpacing": "-0.03em", "fontWeight": "600" }],
+            "headline-md": ["20px", { "lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "500" }],
+            "body-lg": ["16px", { "lineHeight": "24px", "letterSpacing": "-0.005em", "fontWeight": "400" }],
+            "label-sm": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+          }
+        },
+      },
+    }
+  </script>
+<style>
+    .material-symbols-outlined {
+      font-family: 'Material Symbols Outlined';
+      font-weight: normal;
+      font-style: normal;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: normal;
+      text-transform: none;
+      display: inline-block;
+      white-space: nowrap;
+      word-wrap: normal;
+      direction: ltr;
+      -webkit-font-feature-settings: 'liga';
+      -webkit-font-smoothing: antialiased;
+      font-variation-settings: 'FILL' 0, 'wght' 200, 'GRAD' 0, 'opsz' 20;
+    }
+    .cyan-glow {
+      background: radial-gradient(circle 480px at 50% 32%, rgba(6, 182, 212, 0.08), transparent 70%);
+    }
+    .custom-dashed {
+      border-style: dashed;
+      border-width: 1.5px;
+    }
+  </style>
+</head>
+<body class="bg-surface-container-lowest text-on-surface font-body-md min-h-screen flex flex-col justify-between selection:bg-primary-container selection:text-surface-container-lowest overflow-x-hidden">
+<!-- Subtle Atmospheric Cyan Glow Backdrop -->
+<div class="fixed inset-0 cyan-glow pointer-events-none z-0"></div>
+<!-- Top Navigation Header -->
+<header class="relative z-40 w-full h-14 border-b border-white/[0.07] bg-surface-container-lowest/90 backdrop-blur-md px-6 flex items-center justify-between">
+<!-- Brand Anchor -->
+<div class="flex items-center gap-3">
+<a class="flex items-center gap-2 group" href="#">
+<div class="w-6 h-6 rounded bg-surface-container-high flex items-center justify-center border border-white/[0.12] transition-colors group-hover:border-primary">
+<span class="w-2 h-2 rounded-full bg-primary animate-pulse"></span>
+</div>
+<span class="font-headline-sm text-headline-sm font-semibold tracking-tight text-on-surface">voxcut</span>
+</a>
+<span class="hidden sm:inline-block px-2 py-0.5 rounded text-label-sm font-code-mono text-outline border border-white/[0.06] bg-surface-container-low">v1.4.0</span>
+</div>
+<!-- Minimal Right Action Links -->
+<div class="flex items-center gap-3">
+<a class="font-label-lg text-label-lg text-on-surface-variant hover:text-on-surface px-3 py-1.5 rounded transition-colors duration-150" href="#">
+        Sign in
+      </a>
+<a class="font-label-lg text-label-lg font-medium text-surface-container-lowest bg-primary hover:bg-secondary transition-colors duration-150 px-3.5 py-1.5 rounded-lg flex items-center gap-1.5 active:scale-[0.98]" href="#">
+        Get started
+        <span class="material-symbols-outlined text-[16px]">arrow_forward</span>
+</a>
+</div>
+</header>
+<!-- Main Content Zone: Hero + Upload + Feature Highlights -->
+<main class="relative z-10 flex-1 flex flex-col items-center justify-center px-4 py-12 md:py-16 max-w-5xl mx-auto w-full">
+<!-- Hero Section -->
+<section class="text-center max-w-2xl mx-auto mb-10">
+<div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary/25 bg-surface-container-low/60 text-primary font-label-sm text-label-sm mb-5">
+<span class="w-1.5 h-1.5 rounded-full bg-primary"></span>
+        Natural language timeline orchestration
+      </div>
+<h1 class="font-display text-display text-on-surface tracking-tight font-semibold mb-4">
+        Edit video by typing
+      </h1>
+<p class="font-body-lg text-body-lg text-on-surface-variant leading-relaxed font-normal">
+        Describe your cuts, reorders, and captions in plain English — Voxcut turns prompts into polished edits.
+      </p>
+</section>
+<!-- Upload Card Dock -->
+<section class="w-full max-w-2xl mx-auto mb-12">
+<div class="relative custom-dashed border-white/[0.18] hover:border-primary/50 bg-[#0b1120] hover:bg-[#0f172a] rounded-xl p-8 sm:p-12 flex flex-col items-center text-center transition-all duration-200 cursor-pointer group" id="drop-area">
+<input accept="video/mp4,video/quicktime,video/x-m4v" class="hidden" id="video-file-input" type="file"/>
+<!-- Center outline video upload glyph -->
+<div class="w-14 h-14 rounded-lg bg-surface-container border border-white/[0.08] flex items-center justify-center mb-5 text-primary group-hover:scale-105 group-hover:border-primary/40 transition-all duration-150">
+<span class="material-symbols-outlined text-[28px]">file_upload</span>
+</div>
+<h3 class="font-headline-sm text-headline-sm text-on-surface font-medium mb-1">
+          Drop a video to start editing
+        </h3>
+<p class="font-label-md text-label-md text-outline mb-6">
+          MP4, MOV, or ProRes up to 4GB
+        </p>
+<!-- Secondary Action Trigger Button -->
+<button class="font-label-lg text-label-lg font-medium px-4 py-2 rounded-lg bg-surface-container-high hover:bg-surface-container-highest border border-white/[0.12] text-on-surface flex items-center gap-2 transition-colors active:scale-[0.98]" onclick="document.getElementById('video-file-input').click()" type="button">
+<span class="material-symbols-outlined text-[18px] text-primary">add_circle</span>
+          Choose video
+        </button>
+<!-- Dynamic drop state feedback text (hidden by default) -->
+<div class="mt-4 font-code-mono text-code-mono text-primary hidden" id="drop-status">
+          Sequence staging ready. Release to import.
+        </div>
+</div>
+</section>
+<!-- 4 Feature Highlight Cards/Pills -->
+<section class="w-full max-w-4xl mx-auto">
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+<!-- Highlight Card 1 -->
+<div class="bg-[#0b1120] border border-white/[0.07] hover:border-white/[0.14] rounded-lg p-4 transition-colors duration-150 flex flex-col">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-[18px]">content_cut</span>
+<span class="font-headline-sm text-headline-sm font-medium text-on-surface">Cut by prompt</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant leading-snug">
+            Trim pauses, filler words, or specific scenes automatically
+          </p>
+</div>
+<!-- Highlight Card 2 -->
+<div class="bg-[#0b1120] border border-white/[0.07] hover:border-white/[0.14] rounded-lg p-4 transition-colors duration-150 flex flex-col">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-[18px]">subtitles</span>
+<span class="font-headline-sm text-headline-sm font-medium text-on-surface">Auto captions</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant leading-snug">
+            Word-level animated subtitles styled for your brand
+          </p>
+</div>
+<!-- Highlight Card 3 -->
+<div class="bg-[#0b1120] border border-white/[0.07] hover:border-white/[0.14] rounded-lg p-4 transition-colors duration-150 flex flex-col">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-[18px]">view_timeline</span>
+<span class="font-headline-sm text-headline-sm font-medium text-on-surface">Multi-clip assembly</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant leading-snug">
+            Order multiple takes into a coherent sequence
+          </p>
+</div>
+<!-- Highlight Card 4 -->
+<div class="bg-[#0b1120] border border-white/[0.07] hover:border-white/[0.14] rounded-lg p-4 transition-colors duration-150 flex flex-col">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-primary text-[18px]">auto_awesome</span>
+<span class="font-headline-sm text-headline-sm font-medium text-on-surface">AI highlights</span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant leading-snug">
+            Extract viral segments and key talking points instantly
+          </p>
+</div>
+</div>
+</section>
+</main>
+<!-- Minimal Bottom Strip Footer -->
+<footer class="relative z-10 w-full border-t border-white/[0.07] bg-surface-container-lowest/80 py-4 px-6">
+<div class="max-w-5xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 font-label-md text-label-md text-outline">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+<span class="text-on-surface-variant font-code-mono text-code-mono">Systems operational</span>
+</div>
+<nav class="flex items-center gap-6">
+<a class="hover:text-on-surface transition-colors duration-150" href="#">Documentation</a>
+<a class="hover:text-on-surface transition-colors duration-150" href="#">Terms</a>
+<a class="hover:text-on-surface transition-colors duration-150" href="#">Privacy</a>
+<a class="hover:text-on-surface transition-colors duration-150" href="#">System status</a>
+</nav>
+</div>
+</footer>
+<!-- Micro-interaction for Drag-and-Drop Feedback -->
+<script>
+    const dropArea = document.getElementById('drop-area');
+    const dropStatus = document.getElementById('drop-status');
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropArea.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropArea.classList.add('border-primary', 'bg-surface-container');
+        dropStatus.classList.remove('hidden');
+      }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropArea.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropArea.classList.remove('border-primary', 'bg-surface-container');
+        dropStatus.classList.add('hidden');
+      }, false);
+    });
+
+    dropArea.addEventListener('drop', (e) => {
+      const dt = e.dataTransfer;
+      const files = dt.files;
+      if (files && files.length > 0) {
+        dropStatus.textContent = `Processing "${files[0].name}"...`;
+        dropStatus.classList.remove('hidden');
+      }
+    });
+  </script>
+</body></html>

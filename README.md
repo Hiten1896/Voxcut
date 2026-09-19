@@ -51,7 +51,7 @@ All core product stages are complete and integrated into the Voxcut editor exper
 
 ## Maintainer
 
-Hiten Sharma
+Hiten Sharma (@Hiten1896)
 
 ## License
 
