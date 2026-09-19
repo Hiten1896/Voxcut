@@ -105,7 +105,7 @@ export default function EditorPage() {
   const [currentTime, setCurrentTime] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [authUser, setAuthUser] = useState<SessionUser | null>(null);
-  const [authMode, setAuthMode] = useState<"login" | "register">("register");
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authForm, setAuthForm] = useState({ email: "", password: "" });
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
@@ -136,6 +136,19 @@ export default function EditorPage() {
 
   const handleAuthSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const trimmedEmail = authForm.email.trim();
+    const trimmedPassword = authForm.password.trim();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+      setAuthError("Enter a valid email address.");
+      return;
+    }
+
+    if (trimmedPassword.length < 8 || !/[A-Za-z]/.test(trimmedPassword) || !/\d/.test(trimmedPassword)) {
+      setAuthError("Password must be at least 8 characters and include letters and numbers.");
+      return;
+    }
+
     setAuthBusy(true);
     setAuthError("");
 
@@ -144,7 +157,7 @@ export default function EditorPage() {
       const response = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(authForm),
+        body: JSON.stringify({ email: trimmedEmail, password: trimmedPassword }),
       });
 
       const payload = (await response.json()) as { error?: string; user?: SessionUser };
