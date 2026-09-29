@@ -61,6 +61,10 @@ export function isAllowedVideoUpload(file: VideoUploadCandidate): { ok: boolean;
   return { ok: true };
 }
 
+export function isStorageKeyOwnedByUser(key: unknown, userId: string): key is string {
+  return typeof key === "string" && isValidStorageKey(key) && isValidProjectIdentifier(userId) && key.startsWith(`users/${userId}/`);
+}
+
 export async function hasMp4FileSignature(file: Pick<Blob, "slice">): Promise<boolean> {
   const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
   return header.length >= 8 && String.fromCharCode(...header.subarray(4, 8)) === "ftyp";

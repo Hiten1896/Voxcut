@@ -1,5 +1,9 @@
 import fs from "node:fs/promises";
+import { createWriteStream } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 
 import { isValidStorageKey } from "@/lib/security";
 
@@ -59,10 +63,15 @@ export class LocalStorageAdapter implements StorageAdapter {
   async uploadFile(file: File, userId: string, projectId: string, videoId: string) {
     const { videoDir, sourceKey } = this.getProjectAssetKeys(userId, projectId, videoId);
     await this.ensureDir(videoDir);
-
-    const buffer = Buffer.from(await file.arrayBuffer());
     const filePath = this.resolveKey(sourceKey);
-    await fs.writeFile(filePath, buffer);
+    const temporaryPath = path.join(videoDir, `.upload-${randomUUID()}.tmp`);
+    try {
+      await pipeline(Readable.fromWeb(file.stream() as import("node:stream/web").ReadableStream<Uint8Array>), createWriteStream(temporaryPath, { flags: "wx" }));
+      await fs.rename(temporaryPath, filePath);
+    } catch (error) {
+      await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
 
     return {
       filePath,

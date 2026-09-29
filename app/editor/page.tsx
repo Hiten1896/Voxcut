@@ -5,11 +5,15 @@ import { clearPendingUpload, getPendingUpload, setPendingUpload } from "@/lib/pe
 import { parseStoredVideoReference } from "@/lib/project-media";
 import { isAllowedVideoUpload } from "@/lib/security";
 import type { Transcript } from "@/lib/types";
+import { addKeepSegment, cutsFromKeepSegments, keepSegmentsFromCuts, splitKeepSegment, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
+import type { TranscriptHighlight } from "@/lib/highlight-detection";
 
 type HistoryItem = {
   id: string;
   prompt: string;
   cuts: number;
+  operation: string;
+  cutRanges: Array<{ start: number; end: number; reason?: string }>;
   feedback: "up" | "down" | null;
 };
 
@@ -19,11 +23,6 @@ type LoadedClip = {
   url: string;
   duration: number;
   videoId?: string;
-};
-
-type ChatMessage = {
-  role: "assistant" | "user";
-  text: string;
 };
 
 type SessionUser = {
@@ -46,9 +45,24 @@ export default function EditorPage() {
   const [prompt, setPrompt] = useState("");
   const [status, setStatus] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [editPlan, setEditPlan] = useState<Array<{ action: "cut"; start: number; end: number; reason?: string }>>([]);
+  const [editSegments, setEditSegments] = useState<KeepSegment[]>([]);
+  const [selectedEditSegmentId, setSelectedEditSegmentId] = useState<string | null>(null);
+  const [timelineUndo, setTimelineUndo] = useState<KeepSegment[][]>([]);
+  const [timelineRedo, setTimelineRedo] = useState<KeepSegment[][]>([]);
+  const [exportState, setExportState] = useState<"idle" | "rendering" | "completed" | "failed">("idle");
+  const [exportError, setExportError] = useState("");
+  const [exportDownloadUrl, setExportDownloadUrl] = useState<string | null>(null);
+  const initializedTimelineKeyRef = useRef<string | null>(null);
+  const trimDragRef = useRef<{
+    id: string;
+    edge: "start" | "end";
+    initial: KeepSegment[];
+    latest: KeepSegment[];
+    left: number;
+    width: number;
+  } | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [mediaReady, setMediaReady] = useState(false);
@@ -74,6 +88,9 @@ export default function EditorPage() {
   const [transcriptionVideoId, setTranscriptionVideoId] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] = useState<"not_started" | "transcribing" | "completed" | "failed">("not_started");
   const [transcriptionError, setTranscriptionError] = useState("");
+  const [captionStatus, setCaptionStatus] = useState("");
+  const [highlights, setHighlights] = useState<TranscriptHighlight[]>([]);
+  const [highlightStatus, setHighlightStatus] = useState("");
 
   useEffect(() => {
     const fetchSession = async () => {
@@ -143,7 +160,6 @@ export default function EditorPage() {
     }
     setAuthUser(null);
     setProjectName("untitled project");
-    setChatMessages([]);
     setHistory([]);
     setClips([]);
     setSelectedClipId(null);
@@ -167,12 +183,14 @@ export default function EditorPage() {
   const currentTranscript = selectedClip?.videoId === transcriptionVideoId ? transcript : null;
   const currentTranscriptionStatus = selectedClip?.videoId === transcriptionVideoId ? transcriptionStatus : "not_started";
   const currentTranscriptionError = selectedClip?.videoId === transcriptionVideoId ? transcriptionError : "";
+  const timelineStorageKey = authUser && selectedClip?.videoId ? `voxcut:timeline:${authUser.id}:${selectedClip.videoId}` : null;
   const activeTranscriptIndex = currentTranscript?.segments.findIndex(
     (segment) => currentTime >= segment.start && currentTime <= segment.end,
   ) ?? -1;
 
   const timelineSegments = useMemo(() => {
     if (!duration) return [{ start: 0, end: 0, kept: true }];
+    if (editSegments.length > 0) return editSegments.map((segment) => ({ ...segment, kept: true }));
     if (editPlan.length === 0) return [{ start: 0, end: duration, kept: true }];
 
     const sortedCuts = [...editPlan].sort((a, b) => a.start - b.start);
@@ -199,7 +217,7 @@ export default function EditorPage() {
     }
 
     return segments;
-  }, [duration, editPlan]);
+  }, [duration, editPlan, editSegments]);
 
   const sceneBreakdown = useMemo(() => {
     if (!duration || timelineSegments.length === 0) return [];
@@ -211,7 +229,204 @@ export default function EditorPage() {
     }));
   }, [duration, timelineSegments]);
 
-  const hasClips = clips.length > 0;
+  const commitTimeline = (next: KeepSegment[]) => {
+    if (exportState === "rendering") { setStatus("Wait for the current render to finish before changing the timeline."); return; }
+    if (next.length === 0) { setStatus("Keep at least one video segment. Use Restore at the playhead to bring removed footage back."); return; }
+    setTimelineUndo((history) => [...history.slice(-49), editSegments]);
+    setTimelineRedo([]);
+    setEditSegments(next);
+    setEditPlan(cutsFromKeepSegments(next, duration));
+    setOutputUrl(null);
+    setExportDownloadUrl(null);
+    setExportState("idle");
+    if (timelineStorageKey) {
+      try { localStorage.setItem(timelineStorageKey, JSON.stringify(next)); }
+      catch { setStatus("Timeline edits could not be saved in this browser."); }
+    }
+    if (authUser && selectedClip?.videoId) {
+      try { localStorage.removeItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`); } catch { /* stale result is hidden for this session */ }
+    }
+  };
+
+  const trimSelected = (edge: "start" | "end") => {
+    if (!selectedEditSegmentId) return;
+    const selected = editSegments.find((segment) => segment.id === selectedEditSegmentId);
+    if (!selected) return;
+    try {
+      const target = edge === "start" ? Math.min(selected.start + 0.5, selected.end - 0.1) : Math.max(selected.end - 0.5, selected.start + 0.1);
+      commitTimeline(trimKeepSegment(editSegments, selected.id, edge, target));
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not trim this segment."); }
+  };
+
+  const beginTrimDrag = (event: React.PointerEvent<HTMLButtonElement>, segment: KeepSegment, edge: "start" | "end") => {
+    if (exportState === "rendering" || !duration) return;
+    const track = event.currentTarget.closest<HTMLElement>("[data-timeline-track]");
+    const rect = track?.getBoundingClientRect();
+    if (!rect || rect.width <= 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    trimDragRef.current = { id: segment.id, edge, initial: editSegments, latest: editSegments, left: rect.left, width: rect.width };
+    setSelectedEditSegmentId(segment.id);
+    setOutputUrl(null); setExportDownloadUrl(null); setExportState("idle");
+  };
+
+  const moveTrimDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = trimDragRef.current;
+    if (!drag) return;
+    const at = Math.max(0, Math.min(duration, ((event.clientX - drag.left) / drag.width) * duration));
+    try {
+      const next = trimKeepSegment(drag.initial, drag.id, drag.edge, at);
+      drag.latest = next;
+      setEditSegments(next);
+      setEditPlan(cutsFromKeepSegments(next, duration));
+    } catch { /* The trim helper rejects positions that would invalidate the edit list. */ }
+  };
+
+  const finishTrimDrag = (event: React.PointerEvent<HTMLButtonElement>, cancel = false) => {
+    const drag = trimDragRef.current;
+    if (!drag) return;
+    event.stopPropagation();
+    if (cancel) {
+      setEditSegments(drag.initial);
+      setEditPlan(cutsFromKeepSegments(drag.initial, duration));
+    } else if (JSON.stringify(drag.latest) !== JSON.stringify(drag.initial)) {
+      setTimelineUndo((history) => [...history.slice(-49), drag.initial]);
+      setTimelineRedo([]);
+      if (timelineStorageKey) {
+        try { localStorage.setItem(timelineStorageKey, JSON.stringify(drag.latest)); }
+        catch { setStatus("Timeline edits could not be saved in this browser."); }
+      }
+      if (authUser && selectedClip?.videoId) {
+        try { localStorage.removeItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`); } catch { /* stale result is hidden for this session */ }
+      }
+    }
+    trimDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
+
+  const splitSelected = () => {
+    if (!selectedEditSegmentId) return;
+    try {
+      const next = splitKeepSegment(editSegments, selectedEditSegmentId, currentTime);
+      commitTimeline(next);
+      setSelectedEditSegmentId(next.find((segment) => segment.end === currentTime)?.id ?? null);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not split this segment."); }
+  };
+
+  const deleteSelected = () => {
+    if (!selectedEditSegmentId) return;
+    if (editSegments.length <= 1) { setStatus("Restore or split footage before deleting the only kept segment."); return; }
+    const next = editSegments.filter((segment) => segment.id !== selectedEditSegmentId);
+    commitTimeline(next);
+    setSelectedEditSegmentId(next[0]?.id ?? null);
+  };
+
+  const restoreAtPlayhead = () => {
+    try {
+      const next = addKeepSegment(editSegments, duration, currentTime);
+      commitTimeline(next);
+      setSelectedEditSegmentId(next.find((segment) => segment.start <= currentTime && segment.end > currentTime)?.id ?? null);
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not restore footage at the playhead."); }
+  };
+
+  const undoTimeline = () => {
+    if (exportState === "rendering") return;
+    const previous = timelineUndo[timelineUndo.length - 1];
+    if (!previous) return;
+    setTimelineRedo((history) => [...history, editSegments]);
+    setTimelineUndo((history) => history.slice(0, -1));
+    setEditSegments(previous);
+    setEditPlan(cutsFromKeepSegments(previous, duration));
+    setOutputUrl(null); setExportDownloadUrl(null); setExportState("idle");
+    if (authUser && selectedClip?.videoId) { try { localStorage.removeItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`); } catch { /* stale result is hidden for this session */ } }
+    if (timelineStorageKey) { try { localStorage.setItem(timelineStorageKey, JSON.stringify(previous)); } catch { setStatus("Timeline edits could not be saved in this browser."); } }
+  };
+
+  const redoTimeline = () => {
+    if (exportState === "rendering") return;
+    const next = timelineRedo[timelineRedo.length - 1];
+    if (!next) return;
+    setTimelineUndo((history) => [...history, editSegments]);
+    setTimelineRedo((history) => history.slice(0, -1));
+    setEditSegments(next);
+    setEditPlan(cutsFromKeepSegments(next, duration));
+    setOutputUrl(null); setExportDownloadUrl(null); setExportState("idle");
+    if (authUser && selectedClip?.videoId) { try { localStorage.removeItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`); } catch { /* stale result is hidden for this session */ } }
+    if (timelineStorageKey) { try { localStorage.setItem(timelineStorageKey, JSON.stringify(next)); } catch { setStatus("Timeline edits could not be saved in this browser."); } }
+  };
+
+  useEffect(() => {
+    if (!timelineStorageKey || !duration || initializedTimelineKeyRef.current === timelineStorageKey) return;
+    let restored: KeepSegment[] | null = null;
+    try {
+      const saved = localStorage.getItem(timelineStorageKey);
+      if (saved) restored = validateKeepSegments(JSON.parse(saved), duration);
+    } catch { restored = null; }
+    const initial = restored ?? [{ id: `source-${selectedClip?.videoId}`, start: 0, end: duration }];
+    initializedTimelineKeyRef.current = timelineStorageKey;
+    setEditSegments(initial);
+    setEditPlan(cutsFromKeepSegments(initial, duration));
+    setTimelineUndo([]);
+    setTimelineRedo([]);
+    setSelectedEditSegmentId(initial[0]?.id ?? null);
+  }, [duration, selectedClip?.videoId, timelineStorageKey]);
+
+  const handleExport = async () => {
+    if (!selectedClip?.videoId || !authUser || !duration || exportState === "rendering") return;
+    setExportState("rendering");
+    setExportError("");
+    try {
+      const segments = validateKeepSegments(editSegments, duration);
+      const response = await fetch("/api/export", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId, segments, resolution: exportResolution, quality: exportQuality }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.mediaUrl || !payload.downloadUrl) throw new Error(payload.error ?? "Video export failed.");
+      const url = new URL(payload.mediaUrl, window.location.origin);
+      if (url.origin !== window.location.origin || url.pathname !== "/api/media") throw new Error("The export returned an invalid media reference.");
+      setOutputUrl(`${url.pathname}${url.search}`);
+      const download = new URL(payload.downloadUrl, window.location.origin);
+      if (download.origin !== window.location.origin || download.pathname !== "/api/media") throw new Error("The export returned an invalid download reference.");
+      setExportDownloadUrl(`${download.pathname}${download.search}`);
+      try { localStorage.setItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`, JSON.stringify({ mediaUrl: `${url.pathname}${url.search}`, downloadUrl: payload.downloadUrl, duration: payload.duration })); } catch { /* export is still available for this session */ }
+      setExportState("completed");
+      setStatus("Export rendered successfully.");
+    } catch (error) {
+      setExportState("failed");
+      setExportError(error instanceof Error ? error.message : "Video export failed.");
+      setStatus(error instanceof Error ? error.message : "Video export failed.");
+    }
+  };
+
+  const handleAssemble = async () => {
+    if (!selectedClip?.videoId || editSegments.length < 2 || exportState === "rendering") return;
+    setExportState("rendering");
+    setExportError("");
+    try {
+      const response = await fetch("/api/assemble", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId, segments: validateKeepSegments(editSegments, duration) }),
+      });
+      const payload = await response.json();
+      if (!response.ok || typeof payload.mediaUrl !== "string" || typeof payload.downloadUrl !== "string") throw new Error(payload.error ?? "Could not assemble the selected clips.");
+      const media = new URL(payload.mediaUrl, window.location.origin);
+      const download = new URL(payload.downloadUrl, window.location.origin);
+      if (media.origin !== window.location.origin || media.pathname !== "/api/media" || download.origin !== window.location.origin || download.pathname !== "/api/media") throw new Error("The server returned an invalid assembly reference.");
+      const mediaUrl = `${media.pathname}${media.search}`;
+      const downloadUrl = `${download.pathname}${download.search}`;
+      setOutputUrl(mediaUrl);
+      setExportDownloadUrl(downloadUrl);
+      setExportState("completed");
+      setStatus(`Assembled ${payload.clipCount} timeline segments.`);
+      try { localStorage.setItem(`voxcut:export:${authUser?.id}:${selectedClip.videoId}`, JSON.stringify({ mediaUrl, downloadUrl, duration: payload.duration })); } catch { /* assembly remains available in this session */ }
+    } catch (error) {
+      setExportState("failed");
+      setExportError(error instanceof Error ? error.message : "Could not assemble the selected clips.");
+      setStatus(error instanceof Error ? error.message : "Could not assemble the selected clips.");
+    }
+  };
 
   useEffect(() => {
     const active = document.querySelector<HTMLElement>("[data-active-transcript='true']");
@@ -249,7 +464,33 @@ export default function EditorPage() {
     };
     void loadTranscript();
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
-  }, [activeProjectId, authUser, selectedClip?.videoId]);
+  }, [activeProjectId, authUser, selectedClip?.videoId, transcriptionStatus]);
+
+  useEffect(() => {
+    if (!authUser) return;
+    let cancelled = false;
+    void fetch(`/api/prompt-logs?projectId=${encodeURIComponent(activeProjectId)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok || !Array.isArray(payload.logs)) return;
+        const saved: HistoryItem[] = payload.logs.flatMap((log: Record<string, unknown>) => {
+          if (typeof log.id !== "string" || typeof log.prompt !== "string") return [];
+          const plan = log.editPlanJson && typeof log.editPlanJson === "object" ? log.editPlanJson as Record<string, unknown> : {};
+          const cuts = Array.isArray(plan.cuts) ? plan.cuts : Array.isArray(log.editPlanJson) ? log.editPlanJson : [];
+          return [{
+            id: log.id,
+            prompt: log.prompt,
+            cuts: cuts.length,
+            operation: typeof plan.operation === "string" ? plan.operation : "edit",
+            cutRanges: cuts.filter((cut): cut is { start: number; end: number; reason?: string } => Boolean(cut) && typeof cut === "object" && Number.isFinite((cut as { start?: unknown }).start) && Number.isFinite((cut as { end?: unknown }).end)),
+            feedback: log.feedback === "up" || log.feedback === "down" ? log.feedback : null,
+          }];
+        });
+        if (!cancelled) setHistory((current) => [...current.filter((entry) => !saved.some((item) => item.id === entry.id)), ...saved]);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeProjectId, authUser]);
 
   const handleTranscribe = async () => {
     if (!selectedClip?.videoId) return;
@@ -264,13 +505,60 @@ export default function EditorPage() {
         body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId }),
       });
       const payload = await response.json();
-      if (!response.ok || !payload.transcript) throw new Error(payload.error ?? "Transcription failed.");
-      setTranscript(payload.transcript as Transcript);
-      setTranscriptionStatus("completed");
+      if (!response.ok && response.status !== 409) throw new Error(payload.error ?? "Could not start transcription.");
+      setTranscriptionStatus(payload.status?.status ?? "transcribing");
     } catch (error) {
       setTranscriptionStatus("failed");
       setTranscriptionError(error instanceof Error ? error.message : "Transcription failed.");
     }
+  };
+
+  const downloadCaptions = async (format: "srt" | "vtt") => {
+    if (!selectedClip?.videoId) return;
+    setCaptionStatus("Preparing captions…");
+    try {
+      const response = await fetch("/api/captions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not generate captions.");
+      const text = format === "srt" ? payload.srt : payload.vtt;
+      if (typeof text !== "string" || !text.trim()) throw new Error("The transcript contains no caption text.");
+      const objectUrl = URL.createObjectURL(new Blob([text], { type: format === "srt" ? "application/x-subrip;charset=utf-8" : "text/vtt;charset=utf-8" }));
+      const anchor = document.createElement("a");
+      anchor.href = objectUrl;
+      anchor.download = `${selectedClip.name.replace(/\.mp4$/i, "")}.${format}`;
+      anchor.click();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      setCaptionStatus(`${format.toUpperCase()} captions downloaded. Captions are not burned into the MP4.`);
+    } catch (error) { setCaptionStatus(error instanceof Error ? error.message : "Could not generate captions."); }
+  };
+
+  const findHighlights = async () => {
+    if (!selectedClip?.videoId) return;
+    setHighlightStatus("Analyzing recognized speech…");
+    try {
+      const response = await fetch("/api/highlights", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !Array.isArray(payload.highlights)) throw new Error(payload.error ?? "Could not find highlights.");
+      setHighlights(payload.highlights);
+      setHighlightStatus(payload.highlights.length ? "Candidates are ranked by recognized words per second." : "No speech-dense moments were found in this transcript.");
+    } catch (error) { setHighlights([]); setHighlightStatus(error instanceof Error ? error.message : "Could not find highlights."); }
+  };
+
+  const applyHighlight = (highlight: TranscriptHighlight) => {
+    if (!duration) return;
+    const start = Math.max(0, Math.min(highlight.start, duration));
+    const end = Math.max(start, Math.min(highlight.end, duration));
+    if (end <= start) return;
+    const next = [{ id: `highlight-${selectedClip?.videoId}-${Math.round(start * 1000)}`, start, end }];
+    commitTimeline(next);
+    setSelectedEditSegmentId(next[0].id);
+    handleScrub(start);
   };
 
   useEffect(() => {
@@ -387,10 +675,11 @@ export default function EditorPage() {
       setSelectedClipId(clip.id);
       setProjectName(file.name.replace(/\.mp4$/i, ""));
       setOutputUrl(null);
+      setExportDownloadUrl(null);
+      setExportState("idle");
       setCurrentTime(0);
       setMediaReady(false);
       setIsPlaying(false);
-      setChatMessages([{ role: "assistant", text: "Video uploaded. Loading stored media…" }]);
       setStatus(pendingCleanupWarning
         ? "Video uploaded, but the browser could not clear its saved retry copy."
         : restoreWarning ? "Video uploaded, but this browser could not remember it for reload." : "");
@@ -534,6 +823,10 @@ export default function EditorPage() {
       setStatus("Upload a video clip before prompting edits.");
       return;
     }
+    if (!currentTranscript || currentTranscriptionStatus !== "completed") {
+      setStatus("Transcribe this video before asking for an edit plan.");
+      return;
+    }
     if (!prompt.trim()) return;
 
     try {
@@ -551,21 +844,22 @@ export default function EditorPage() {
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? "Could not create an edit plan.");
 
-      const nextCount = Array.isArray(payload.plan) ? payload.plan.length : 0;
-      const nextPlan = Array.isArray(payload.plan) ? payload.plan : [];
+      const planResult = payload.plan as { sourceVideoId?: string; operation?: string; cuts?: unknown } | undefined;
+      if (planResult?.sourceVideoId !== selectedClip.videoId || !Array.isArray(planResult.cuts) || !["remove", "keep", "extract", "concise"].includes(planResult.operation ?? "")) {
+        throw new Error("The planner returned an invalid plan for this video.");
+      }
+      const nextPlan = planResult.cuts as Array<{ action: "cut"; start: number; end: number; reason?: string }>;
+      const nextCount = nextPlan.length;
       const trimmedPrompt = prompt.trim();
-      setOutputUrl(payload.outputUrl ?? null);
+      const proposedSegments = keepSegmentsFromCuts(nextPlan, duration);
+      commitTimeline(proposedSegments);
+      setSelectedEditSegmentId(proposedSegments[0]?.id ?? null);
+      setOutputUrl(null);
       setEditPlan(nextPlan);
       setCurrentTime(0);
-      setChatMessages([
-        { role: "user", text: trimmedPrompt },
-        {
-          role: "assistant",
-          text: nextCount > 0 ? `I cut ${nextCount} section${nextCount === 1 ? "" : "s"} to keep the strongest rhythm and remove filler.` : "I kept the footage mostly intact and focused on the strongest pacing moments.",
-        },
-      ]);
+      if (typeof payload.promptLogId !== "string") throw new Error("The edit plan was created, but its history record could not be saved.");
       setHistory((previous) => [
-        { id: payload.promptLogId ?? crypto.randomUUID(), prompt: trimmedPrompt, cuts: nextCount, feedback: null },
+        { id: payload.promptLogId, prompt: trimmedPrompt, cuts: nextCount, operation: planResult.operation!, cutRanges: nextPlan, feedback: null },
         ...previous,
       ]);
       setStatus("");
@@ -575,8 +869,15 @@ export default function EditorPage() {
     }
   };
 
-  const handleFeedback = (id: string, feedback: "up" | "down") => {
-    setHistory((previous) => previous.map((entry) => (entry.id === id ? { ...entry, feedback } : entry)));
+  const handleFeedback = async (id: string, feedback: "up" | "down") => {
+    try {
+      const response = await fetch(`/api/prompt-logs/${encodeURIComponent(id)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ feedback }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? "Could not save feedback.");
+      setHistory((previous) => previous.map((entry) => (entry.id === id ? { ...entry, feedback } : entry)));
+    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not save feedback."); }
   };
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -663,7 +964,7 @@ export default function EditorPage() {
 
         <div className="flex items-center gap-2">
           <div className="flex items-center rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-0.5">
-            <button type="button" className="flex items-center gap-1 rounded px-2.5 py-1 text-[12px] text-[#bcc9cd] transition-colors hover:bg-[#242a36]/50 hover:text-[#dde2f3]">
+            <button type="button" onClick={undoTimeline} disabled={!timelineUndo.length || exportState === "rendering"} className="flex items-center gap-1 rounded px-2.5 py-1 text-[12px] text-[#bcc9cd] transition-colors hover:bg-[#242a36]/50 hover:text-[#dde2f3] disabled:opacity-40">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                 <path d="M9 14 4 9l5-5" />
                 <path d="M20 19v-1a4 4 0 0 0-4-4H4" />
@@ -671,7 +972,7 @@ export default function EditorPage() {
               <span className="hidden sm:inline">Undo</span>
             </button>
             <div className="h-3.5 w-px bg-[#3d494c]/30" />
-            <button type="button" className="flex items-center gap-1 rounded px-2.5 py-1 text-[12px] text-[#bcc9cd] transition-colors hover:bg-[#242a36]/50 hover:text-[#dde2f3]">
+            <button type="button" onClick={redoTimeline} disabled={!timelineRedo.length || exportState === "rendering"} className="flex items-center gap-1 rounded px-2.5 py-1 text-[12px] text-[#bcc9cd] transition-colors hover:bg-[#242a36]/50 hover:text-[#dde2f3] disabled:opacity-40">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                 <path d="m15 10 5 5-5 5" />
                 <path d="M4 5v1a4 4 0 0 0 4 4h12" />
@@ -680,17 +981,10 @@ export default function EditorPage() {
             </button>
           </div>
 
-          <button type="button" className="flex h-8 w-8 items-center justify-center rounded-lg text-[#bcc9cd] transition-colors hover:bg-[#242a36]/50 hover:text-[#dde2f3]" aria-label="Help">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-              <circle cx="12" cy="12" r="9" />
-              <path d="M9.09 9a3 3 0 1 1 5.82 1c-.92 1.74-2.93 2.13-3.58 4.22" />
-              <circle cx="12" cy="17" r="0.8" fill="currentColor" stroke="none" />
-            </svg>
-          </button>
-
           <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="rounded-lg border border-[#3d494c]/40 px-3 py-2 text-[12px] text-[#dde2f3] disabled:opacity-50">
             Upload MP4
           </button>
+          <button type="button" onClick={() => void handleSignOut()} className="rounded-lg border border-[#3d494c]/40 px-3 py-2 text-[12px] text-[#bcc9cd]">Sign out</button>
           <button
             type="button"
             onClick={() => setShowExport(true)}
@@ -720,29 +1014,7 @@ export default function EditorPage() {
 
       <aside className="fixed bottom-0 left-0 top-14 z-30 flex w-14 flex-col items-center justify-between border-r border-[#3d494c]/30 bg-[#0e131f] py-3">
         <div className="flex w-full flex-col items-center gap-2">
-          <button type="button" className="flex w-full items-center justify-center border-l-2 border-[#4cd7f6] bg-[#1a202c]/40 py-2 text-[#4cd7f6]" title="Layers" aria-label="Layers">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
-              <path d="M12 3 3 8l9 5 9-5-9-5Z" />
-              <path d="m3 12 9 5 9-5" />
-              <path d="m3 16 9 5 9-5" />
-            </svg>
-          </button>
-
-          <button type="button" className="flex w-full items-center justify-center py-2 text-[#bcc9cd] transition-colors hover:bg-[#1a202c]/30 hover:text-[#dde2f3]" title="Home" aria-label="Home">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
-              <path d="m3 10 9-7 9 7" />
-              <path d="M5 9v10h14V9" />
-            </svg>
-          </button>
-
-          <button type="button" className="flex w-full items-center justify-center py-2 text-[#bcc9cd] transition-colors hover:bg-[#1a202c]/30 hover:text-[#dde2f3]" title="Media library" aria-label="Media library">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
-              <rect x="3" y="5" width="18" height="14" rx="2" />
-              <path d="m15 9 5 3-5 3V9Z" />
-            </svg>
-          </button>
-
-          <button type="button" className="flex w-full items-center justify-center py-2 text-[#bcc9cd] transition-colors hover:bg-[#1a202c]/30 hover:text-[#dde2f3]" title="Audio" aria-label="Audio">
+          <button type="button" onClick={toggleMute} className="flex w-full items-center justify-center py-2 text-[#bcc9cd] transition-colors hover:bg-[#1a202c]/30 hover:text-[#dde2f3]" title="Toggle audio" aria-label={volume > 0 ? "Mute video" : "Unmute video"}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
               <path d="M5 14V9h3l5-4v14l-5-4H5Z" />
               <path d="M16 9a4 4 0 0 1 0 6" />
@@ -769,7 +1041,7 @@ export default function EditorPage() {
                     <video
                       ref={videoRef}
                       key={selectedClip.id}
-                      src={outputUrl ?? selectedClip.url}
+                      src={selectedClip.url}
                       className="h-full w-full object-cover"
                       playsInline
                       disablePictureInPicture
@@ -790,7 +1062,34 @@ export default function EditorPage() {
                         setCurrentTime(Number.isFinite(video.currentTime) ? video.currentTime : 0);
                         video.volume = volume;
                         setMediaReady(true);
-                        setChatMessages([{ role: "assistant", text: "Video uploaded. Playback is ready in the editor." }]);
+                        setOutputUrl(null);
+                        setExportDownloadUrl(null);
+                        setExportState("idle");
+                        if (authUser && selectedClip.videoId) {
+                          try {
+                            const saved = localStorage.getItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`);
+                            const reference = saved ? JSON.parse(saved) as { mediaUrl?: string; downloadUrl?: string } : null;
+                            const media = reference?.mediaUrl ? new URL(reference.mediaUrl, window.location.origin) : null;
+                            const download = reference?.downloadUrl ? new URL(reference.downloadUrl, window.location.origin) : null;
+                            if (media?.origin === window.location.origin && media.pathname === "/api/media" && download?.origin === window.location.origin && download.pathname === "/api/media") {
+                              void fetch(media, { headers: { Range: "bytes=0-0" }, cache: "no-store" }).then((response) => {
+                                if (!response.ok) throw new Error("Saved export is unavailable.");
+                                setOutputUrl(`${media.pathname}${media.search}`);
+                                setExportDownloadUrl(`${download.pathname}${download.search}`);
+                                setExportError("");
+                                setExportState("completed");
+                              }).catch(() => {
+                                try { localStorage.removeItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`); } catch { /* browser storage may be unavailable */ }
+                                setExportError("The saved export is unavailable. Render the current timeline again.");
+                                setExportState("failed");
+                              });
+                            }
+                          } catch {
+                            try { localStorage.removeItem(`voxcut:export:${authUser.id}:${selectedClip.videoId}`); } catch { /* browser storage may be unavailable */ }
+                            setExportError("The saved export reference is invalid. Render the current timeline again.");
+                            setExportState("failed");
+                          }
+                        }
                         setStatus("");
                       }}
                       onPlay={() => setIsPlaying(true)}
@@ -798,7 +1097,6 @@ export default function EditorPage() {
                       onError={() => {
                         setMediaReady(false);
                         setIsPlaying(false);
-                        setChatMessages([{ role: "assistant", text: "The video was uploaded, but the stored media could not be loaded." }]);
                         setStatus("The uploaded video could not be loaded. Check the media connection or upload it again.");
                       }}
                     />
@@ -831,9 +1129,6 @@ export default function EditorPage() {
 
               <div className="flex h-12 items-center justify-between border-t border-[#3d494c]/30 bg-[#161c28] px-4">
                 <div className="flex items-center gap-2">
-                  <button type="button" className="rounded border border-[#3d494c]/30 bg-[#1a202c] px-2 py-1 text-[11px] text-[#bcc9cd]">
-                    16:9
-                  </button>
                   <div className="flex items-center gap-1.5 text-[#bcc9cd]">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                       <path d="M4 14V10h3l5-4v12l-5-4H4Z" />
@@ -841,7 +1136,7 @@ export default function EditorPage() {
                       <path d="M18.5 7a7 7 0 0 1 0 10" />
                     </svg>
                     <div className="h-1 w-16 overflow-hidden rounded-full bg-[#2f3542]">
-                      <div className="h-full w-3/4 bg-[#bcc9cd]" />
+                    <div className="h-full bg-[#bcc9cd]" style={{ width: `${volume * 100}%` }} />
                     </div>
                   </div>
                 </div>
@@ -886,7 +1181,7 @@ export default function EditorPage() {
 
                 <div className="flex items-center gap-2 text-[11px] text-[#bcc9cd]">
                   <span className="font-mono">{selectedClip ? (mediaReady ? `${formatTime(duration)} runtime` : "Loading video metadata") : "Waiting for media"}</span>
-                  <button type="button" className="p-1 transition-colors hover:text-[#dde2f3]" aria-label="Fullscreen">
+                  <button type="button" onClick={() => void videoRef.current?.requestFullscreen()} disabled={!selectedClip} className="p-1 transition-colors hover:text-[#dde2f3] disabled:opacity-40" aria-label="Fullscreen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                       <path d="M8 3H3v5" />
                       <path d="M16 3h5v5" />
@@ -916,28 +1211,27 @@ export default function EditorPage() {
                   {historyCountLabel}
                 </span>
               </div>
-              <button type="button" className="p-1 text-[#bcc9cd] transition-colors hover:text-[#dde2f3]" aria-label="Tune settings">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                  <path d="M4 7h16" />
-                  <path d="M7 12h10" />
-                  <path d="M10 17h4" />
-                </svg>
-              </button>
             </div>
 
             <div className="flex-1 overflow-y-auto p-3">
               <section aria-label="Video transcript" className="mb-3 rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-3">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <h2 className="text-[12px] font-medium uppercase tracking-[0.12em] text-[#4cd7f6]">Transcript</h2>
-                  {selectedClip?.videoId && currentTranscriptionStatus !== "transcribing" && currentTranscriptionStatus !== "completed" ? (
-                    <button type="button" onClick={handleTranscribe} className="rounded border border-[#4cd7f6]/30 px-2 py-1 text-[11px] text-[#4cd7f6] hover:bg-[#4cd7f6]/10">
-                      {currentTranscriptionStatus === "failed" ? "Retry" : "Transcribe video"}
-                    </button>
-                  ) : null}
+                  <div className="flex gap-1">
+                    {selectedClip?.videoId && currentTranscriptionStatus !== "transcribing" && currentTranscriptionStatus !== "completed" ? (
+                      <button type="button" onClick={handleTranscribe} className="rounded border border-[#4cd7f6]/30 px-2 py-1 text-[11px] text-[#4cd7f6] hover:bg-[#4cd7f6]/10">
+                        {currentTranscriptionStatus === "failed" ? "Retry" : "Transcribe"}
+                      </button>
+                    ) : null}
+                    {currentTranscript ? <button type="button" onClick={findHighlights} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#bcc9cd]">Highlights</button> : null}
+                    {currentTranscript ? <button type="button" onClick={() => void downloadCaptions("srt")} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#bcc9cd]">SRT</button> : null}
+                    {currentTranscript ? <button type="button" onClick={() => void downloadCaptions("vtt")} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#bcc9cd]">VTT</button> : null}
+                  </div>
                 </div>
                 {!selectedClip?.videoId ? <p className="text-[12px] text-[#869397]">Upload a video to transcribe its speech.</p> : null}
                 {currentTranscriptionStatus === "transcribing" ? <p role="status" className="text-[12px] text-[#bcc9cd]">Transcribing the uploaded video…</p> : null}
                 {currentTranscriptionError ? <p role="alert" className="mb-2 text-[12px] text-[#ffb4ab]">{currentTranscriptionError}</p> : null}
+                {captionStatus ? <p role="status" className="mb-2 text-[11px] text-[#bcc9cd]">{captionStatus}</p> : null}
                 {currentTranscript && currentTranscript.segments.length === 0 ? <p className="text-[12px] text-[#bcc9cd]">No speech was detected in this video.</p> : null}
                 {currentTranscript?.text ? <p className="mb-2 text-[12px] leading-5 text-[#dde2f3]">{currentTranscript.text}</p> : null}
                 {currentTranscript?.segments.map((segment, index) => (
@@ -952,6 +1246,16 @@ export default function EditorPage() {
                     <span className="mr-2 font-mono text-[#869397]">{formatTime(segment.start)}–{formatTime(segment.end)}</span>{segment.text}
                   </button>
                 ))}
+                {highlightStatus ? <p role="status" className="mt-2 text-[11px] text-[#bcc9cd]">{highlightStatus}</p> : null}
+                {highlights.map((highlight) => (
+                  <div key={highlight.id} className="mt-2 rounded border border-[#3d494c]/30 p-2 text-[11px]">
+                    <button type="button" onClick={() => handleScrub(highlight.start)} className="block text-left text-[#dde2f3]">
+                      <span className="mr-2 font-mono text-[#4cd7f6]">{formatTime(highlight.start)}–{formatTime(highlight.end)}</span>{highlight.text}
+                    </button>
+                    <p className="mt-1 text-[#869397]">{highlight.reason}</p>
+                    <button type="button" onClick={() => applyHighlight(highlight)} className="mt-1 text-[#4cd7f6]">Keep this highlight</button>
+                  </div>
+                ))}
               </section>
               <div className="flex flex-col gap-2.5">
                 {history.length > 0 ? history.map((entry) => (
@@ -959,12 +1263,12 @@ export default function EditorPage() {
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-[13px] leading-snug text-[#dde2f3]">{entry.prompt}</p>
                       <div className="flex shrink-0 items-center gap-1 text-[#bcc9cd]">
-                        <button type="button" className="p-0.5 transition-colors hover:text-[#4cd7f6]" aria-label="Helpful prompt">
+                        <button type="button" onClick={() => void handleFeedback(entry.id, "up")} className="p-0.5 transition-colors hover:text-[#4cd7f6]" aria-label="Helpful prompt">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5">
                             <path d="M7 10v9m0 0H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3m0 0 4.5-7.8A1.4 1.4 0 0 1 16.7 3c1 0 1.8.8 1.8 1.8 0 .3-.1.7-.2.9L16 10h4.8a2 2 0 0 1 2 2.3l-1 6a2 2 0 0 1-2 1.7H7Z" />
                           </svg>
                         </button>
-                        <button type="button" className="p-0.5 transition-colors hover:text-[#ffb4ab]" aria-label="Unhelpful prompt">
+                        <button type="button" onClick={() => void handleFeedback(entry.id, "down")} className="p-0.5 transition-colors hover:text-[#ffb4ab]" aria-label="Unhelpful prompt">
                           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5">
                             <path d="M17 14V5m0 0h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3m0 0-4.5 7.8A1.4 1.4 0 0 1 7.3 21c-1 0-1.8-.8-1.8-1.8 0-.3.1-.7.2-.9L8 14H3.2a2 2 0 0 1-2-2.3l1-6a2 2 0 0 1 2-1.7H17Z" />
                           </svg>
@@ -974,8 +1278,9 @@ export default function EditorPage() {
 
                     <div className="inline-flex w-fit items-center gap-1.5 rounded border border-[#06b6d4]/30 bg-[#0e131f] px-2 py-0.5 text-[10px] text-[#4cd7f6]">
                       <span className="h-1.5 w-1.5 rounded-full bg-[#06b6d4]" />
-                      <span>{entry.cuts} cut{entry.cuts === 1 ? "" : "s"}{entry.feedback ? ` • ${entry.feedback === "up" ? "Helpful" : "Needs work"}` : ""}</span>
+                      <span>{entry.operation} · {entry.cuts} cut{entry.cuts === 1 ? "" : "s"}{entry.feedback ? ` · ${entry.feedback === "up" ? "Helpful" : "Needs work"}` : ""}</span>
                     </div>
+                    {entry.cutRanges.map((cut, index) => <button key={`${cut.start}-${index}`} type="button" onClick={() => handleScrub(cut.start)} className="text-left text-[10px] text-[#869397]">Cut {formatTime(cut.start)}–{formatTime(cut.end)}{cut.reason ? ` · ${cut.reason}` : ""}</button>)}
                   </div>
                 )) : (
                   <div className="rounded-lg border border-dashed border-[#3d494c]/30 bg-[#0e131f] p-4 text-left">
@@ -998,7 +1303,7 @@ export default function EditorPage() {
                 <button
                   type="button"
                   onClick={handleGenerate}
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || !currentTranscript || currentTranscriptionStatus !== "completed"}
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#06b6d4] text-[#0e131f] transition-colors hover:bg-[#5de6ff] disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="Send prompt"
                 >
@@ -1027,62 +1332,66 @@ export default function EditorPage() {
             </div>
 
             <div className="flex items-center gap-3">
-              <span className="text-[#869397]">Sequence 1080p</span>
-              <button type="button" className="p-0.5 text-[#bcc9cd] transition-colors hover:text-[#dde2f3]" aria-label="Zoom in">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                  <circle cx="11" cy="11" r="5" />
-                  <path d="M16 16 21 21" />
-                  <path d="M11 8v6M8 11h6" />
-                </svg>
-              </button>
-              <button type="button" className="p-0.5 text-[#bcc9cd] transition-colors hover:text-[#dde2f3]" aria-label="Zoom out">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
-                  <circle cx="11" cy="11" r="5" />
-                  <path d="M16 16 21 21" />
-                  <path d="M8 11h6" />
-                </svg>
-              </button>
+              <span className="text-[#869397]">{duration > 0 ? `Timeline · ${formatTime(duration)}` : "Timeline unavailable"}</span>
             </div>
           </div>
 
-          <div className="relative flex h-[calc(100%-24px)] items-center gap-2 overflow-x-auto p-2">
-            <div className="pointer-events-none absolute bottom-0 top-0 z-20 flex flex-col items-center" style={{ left: `calc(${progressPct}% + 8px)` }}>
-              <div className="h-2.5 w-2.5 bg-[#4cd7f6]" style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }} />
-              <div className="w-0.5 flex-1 bg-[#4cd7f6]" />
+          <div className="flex h-[calc(100%-24px)] min-h-0 flex-col gap-1 p-1.5">
+            <div className="flex h-7 shrink-0 items-center gap-1 overflow-x-auto text-[10px]">
+              <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={() => trimSelected("start")} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Trim start +0.5s</button>
+              <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={() => trimSelected("end")} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Trim end −0.5s</button>
+              <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={splitSelected} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Split at playhead</button>
+              <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={deleteSelected} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Delete segment</button>
+              <button type="button" disabled={!duration || exportState === "rendering"} onClick={restoreAtPlayhead} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Restore at playhead</button>
+              <button type="button" disabled={editSegments.length < 2 || exportState === "rendering"} onClick={handleAssemble} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Assemble segments</button>
+              <button type="button" disabled={!timelineUndo.length || exportState === "rendering"} onClick={undoTimeline} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Undo</button>
+              <button type="button" disabled={!timelineRedo.length || exportState === "rendering"} onClick={redoTimeline} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Redo</button>
             </div>
-
-            {sceneBreakdown.length > 0 ? sceneBreakdown.map((segment, index) => (
-              <div
-                key={`${segment.start}-${segment.end}-${index}`}
-                className={`relative h-20 shrink-0 overflow-hidden rounded border p-2 ${segment.kept ? "border-[#3d494c]/30 bg-[#1a202c]" : "border-[#4cd7f6]/40 bg-[#0f172a]"}`}
-                style={{ width: `${segment.width}%` }}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="max-w-[80%] truncate text-[11px] font-medium text-[#dde2f3]">{segment.kept ? "Keep" : "Cut"}</span>
-                  <span className="font-mono text-[10px] text-[#bcc9cd]">{formatTime(segment.start)} - {formatTime(segment.end)}</span>
-                </div>
-
-                <div className="mt-4 flex h-8 items-center gap-0.5">
-                  {Array.from({ length: 12 }).map((_, barIndex) => (
-                    <div
-                      key={`${segment.start}-${barIndex}`}
-                      className={`w-1 ${segment.kept ? "bg-[#7bd0ff]" : "bg-[#4cd7f6]"}`}
-                      style={{ height: `${(barIndex % 6) * 4 + 10}px` }}
-                    />
-                  ))}
-                </div>
+            <div data-timeline-track="true" className="relative min-h-0 flex-1 overflow-hidden rounded bg-[#0e131f]" onClick={(event) => {
+              if (!duration || !mediaReady) return;
+              const rect = event.currentTarget.getBoundingClientRect();
+              handleScrub(Math.max(0, Math.min(duration, ((event.clientX - rect.left) / rect.width) * duration)));
+            }}>
+              <div className="pointer-events-none absolute bottom-0 top-0 z-20 flex flex-col items-center" style={{ left: `${progressPct}%` }}>
+                <div className="h-2.5 w-2.5 bg-[#4cd7f6]" style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }} />
+                <div className="w-0.5 flex-1 bg-[#4cd7f6]" />
               </div>
-            )) : (
-              <div className="flex h-20 w-full items-center justify-center rounded border border-dashed border-[#3d494c]/40 bg-[#0e131f]/50 px-4 text-center text-[12px] text-[#bcc9cd]">
-                Timeline will appear after the first valid edit plan is generated.
-              </div>
-            )}
-
-            <button type="button" className="flex h-20 w-12 shrink-0 flex-col items-center justify-center rounded border border-dashed border-[#3d494c]/40 bg-[#0e131f]/50 text-[#bcc9cd] transition-colors hover:border-[#4cd7f6] hover:text-[#4cd7f6]" aria-label="Add clip">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
-                <path d="M12 5v14M5 12h14" />
-              </svg>
-            </button>
+              {sceneBreakdown.map((segment, index) => {
+                const editSegment = editSegments[index];
+                const selected = editSegment?.id === selectedEditSegmentId;
+                const segmentKey = editSegment?.id ?? `${segment.start}-${segment.end}-${index}`;
+                const commonHandleProps = {
+                  disabled: exportState === "rendering",
+                  onPointerDown: (event: React.PointerEvent<HTMLButtonElement>, edge: "start" | "end") => editSegment && beginTrimDrag(event, editSegment, edge),
+                  onPointerMove: moveTrimDrag,
+                  onPointerUp: (event: React.PointerEvent<HTMLButtonElement>) => finishTrimDrag(event),
+                  onPointerCancel: (event: React.PointerEvent<HTMLButtonElement>) => finishTrimDrag(event, true),
+                };
+                return (
+                  <div key={segmentKey} className="contents">
+                    <button
+                      type="button"
+                      aria-label={`Kept segment ${formatTime(segment.start)} to ${formatTime(segment.end)}`}
+                      aria-pressed={selected}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedEditSegmentId(editSegment?.id ?? null);
+                        handleScrub(segment.start);
+                      }}
+                      className={`absolute bottom-1 top-1 overflow-hidden rounded border p-1 text-left ${selected ? "border-[#4cd7f6] bg-[#17415a]" : "border-[#3d494c]/50 bg-[#1a202c]"}`}
+                      style={{ left: `${duration ? (segment.start / duration) * 100 : 0}%`, width: `${segment.width}%` }}
+                    >
+                      <span className="block truncate text-[10px] font-medium text-[#dde2f3]">Keep {formatTime(segment.start)}–{formatTime(segment.end)}</span>
+                    </button>
+                    {editSegment ? <>
+                      <button type="button" aria-label={`Drag trim start for segment ${index + 1}`} title="Drag to trim segment start" {...commonHandleProps} onPointerDown={(event) => commonHandleProps.onPointerDown(event, "start")} className="absolute top-1/2 z-10 h-9 w-2 -translate-x-1/2 -translate-y-1/2 touch-none rounded bg-[#4cd7f6] disabled:opacity-40" style={{ left: `${(segment.start / duration) * 100}%` }} />
+                      <button type="button" aria-label={`Drag trim end for segment ${index + 1}`} title="Drag to trim segment end" {...commonHandleProps} onPointerDown={(event) => commonHandleProps.onPointerDown(event, "end")} className="absolute top-1/2 z-10 h-9 w-2 -translate-x-1/2 -translate-y-1/2 touch-none rounded bg-[#4cd7f6] disabled:opacity-40" style={{ left: `${(segment.end / duration) * 100}%` }} />
+                    </> : null}
+                  </div>
+                );
+              })}
+              {duration > 0 && sceneBreakdown.length === 0 ? <span className="p-2 text-[11px] text-[#bcc9cd]">Timeline unavailable.</span> : null}
+            </div>
           </div>
         </footer>
       </main>
@@ -1108,8 +1417,6 @@ export default function EditorPage() {
                 <label className="mb-2 block text-[11px] uppercase tracking-[0.14em] text-[#bcc9cd]">Default export</label>
                 <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value)} className="w-full rounded-xl border border-[#3d494c]/30 bg-[#0e131f] px-3 py-2.5 text-[13px] text-[#dde2f3] outline-none focus:border-[#4cd7f6]">
                   <option>MP4</option>
-                  <option>GIF</option>
-                  <option>WebM</option>
                 </select>
               </div>
 
@@ -1117,6 +1424,7 @@ export default function EditorPage() {
                 <div>
                   <label className="mb-2 block text-[11px] uppercase tracking-[0.14em] text-[#bcc9cd]">Resolution</label>
                   <select value={exportResolution} onChange={(event) => setExportResolution(event.target.value)} className="w-full rounded-xl border border-[#3d494c]/30 bg-[#0e131f] px-3 py-2.5 text-[13px] text-[#dde2f3] outline-none focus:border-[#4cd7f6]">
+                    <option value="source">Source</option>
                     <option>720p</option>
                     <option>1080p</option>
                     <option>4K</option>
@@ -1168,12 +1476,26 @@ export default function EditorPage() {
             </div>
 
             <div className="mt-5 rounded-2xl border border-[#4cd7f6]/20 bg-[#06b6d4]/10 p-4 text-[13px] leading-6 text-[#dde2f3]">
-              Render queue is prepared for a clean final export. This screen is ready to be connected to a production export endpoint when you add backend delivery or cloud storage.
+              {exportState === "rendering" ? <p role="status">Rendering your current timeline with FFmpeg…</p> : null}
+              {exportState === "failed" ? <p role="alert" className="text-[#ffb4ab]">{exportError}</p> : null}
+              {exportState === "completed" && outputUrl ? (
+                <div>
+                  <p>Export completed. Preview and download the stored MP4.</p>
+                  <video
+                    controls
+                    preload="metadata"
+                    src={outputUrl}
+                    onError={() => { setExportState("failed"); setExportError("The stored export is unavailable. Render the current timeline again."); }}
+                    className="mt-3 max-h-56 w-full rounded bg-black"
+                  />
+                  {exportDownloadUrl ? <a href={exportDownloadUrl} className="mt-3 inline-block rounded border border-[#4cd7f6]/40 px-3 py-2 text-[#4cd7f6]">Download MP4</a> : null}
+                </div>
+              ) : exportState !== "rendering" && exportState !== "failed" ? <p>The current kept timeline segments will be rendered to an MP4.</p> : null}
             </div>
 
             <div className="mt-6 flex gap-3">
-              <button type="button" onClick={() => setShowExport(false)} className="flex-1 rounded-xl border border-[#3d494c]/30 bg-[#242a36] px-4 py-2.5 text-[13px] font-medium text-[#dde2f3]">Cancel</button>
-              <button type="button" onClick={() => { setShowExport(false); setStatus("Export queued for render."); }} className="flex-1 rounded-xl border border-[#4cd7f6]/30 bg-[#06b6d4]/10 px-4 py-2.5 text-[13px] font-medium text-[#4cd7f6]">Render now</button>
+              <button type="button" onClick={() => setShowExport(false)} className="flex-1 rounded-xl border border-[#3d494c]/30 bg-[#242a36] px-4 py-2.5 text-[13px] font-medium text-[#dde2f3]">Close</button>
+              <button type="button" disabled={!selectedClip?.videoId || !mediaReady || exportState === "rendering" || editSegments.length === 0} onClick={handleExport} className="flex-1 rounded-xl border border-[#4cd7f6]/30 bg-[#06b6d4]/10 px-4 py-2.5 text-[13px] font-medium text-[#4cd7f6] disabled:opacity-40">{exportState === "rendering" ? "Rendering…" : "Render MP4"}</button>
             </div>
           </div>
         </div>

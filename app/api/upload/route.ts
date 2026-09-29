@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/lib/auth";
 import { storage } from "@/lib/storage";
-import { getClientKey, hasMp4FileSignature, isAllowedVideoUpload, isValidProjectIdentifier, rateLimitAllow } from "@/lib/security";
+import { getClientKey, hasMp4FileSignature, isAllowedVideoUpload, isValidProjectIdentifier, MAX_UPLOAD_BYTES, rateLimitAllow } from "@/lib/security";
 import { getVideoMetadata } from "@/lib/video-metadata";
 
 export const runtime = "nodejs";
@@ -20,7 +20,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Too many upload requests. Please wait a moment and try again." }, { status: 429 });
   }
 
-  const formData = await request.formData();
+  const contentLength = Number(request.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > MAX_UPLOAD_BYTES + 1024 * 1024) {
+    return NextResponse.json({ error: "The upload exceeds the configured 250MB limit." }, { status: 413 });
+  }
+  let formData: FormData;
+  try { formData = await request.formData(); }
+  catch { return NextResponse.json({ error: "The upload form could not be read." }, { status: 400 }); }
   const file = formData.get("file");
   const projectId = String(formData.get("projectId") ?? "default-project").trim();
   const userId = currentUser.id;

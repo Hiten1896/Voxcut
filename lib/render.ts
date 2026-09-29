@@ -11,6 +11,7 @@ import type { CutAction } from "@/lib/types";
 const execFileAsync = promisify(execFile);
 const ffmpegPath = resolveExecutable("ffmpeg");
 const MIN_SEGMENT_SECONDS = 0.05;
+export type RenderOptions = { resolution?: "source" | "720p" | "1080p" | "4K"; quality?: "Draft" | "High" | "Premium" };
 
 function getKeepIntervals(cuts: CutAction[], duration: number) {
   const sorted = [...cuts].sort((a, b) => a.start - b.start);
@@ -28,23 +29,37 @@ function getKeepIntervals(cuts: CutAction[], duration: number) {
   return keep;
 }
 
-export async function renderTrimmedVideo(inputPath: string, cuts: CutAction[], outputPath: string) {
+export async function renderSelectedSegments(inputPath: string, selected: Array<{ start: number; end: number }>, outputPath: string, options: RenderOptions = {}) {
   const metadata = await getVideoMetadata(inputPath);
-  const keep = getKeepIntervals(cuts, metadata.duration);
+  if (!Array.isArray(selected) || selected.length === 0 || selected.length > 500) throw new Error("The export must contain at least one valid segment.");
+  const keep = selected.map((segment) => {
+    if (!Number.isFinite(segment.start) || !Number.isFinite(segment.end) || segment.start < 0 || segment.end <= segment.start || segment.end > metadata.duration) {
+      throw new Error("The export edit list contains an invalid segment range.");
+    }
+    return { start: segment.start, end: segment.end };
+  });
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   const temporaryOutput = path.join(path.dirname(outputPath), `.render-${randomUUID()}.mp4`);
 
-  if (cuts.length === 0) {
-    await fs.copyFile(inputPath, temporaryOutput);
-    await fs.rename(temporaryOutput, outputPath);
-    return { outputPath, duration: metadata.duration };
+  if (keep.length === 1 && keep[0].start === 0 && metadata.duration - keep[0].end < 0.001
+    && (options.resolution ?? "source") === "source" && (options.quality ?? "High") === "High") {
+    try {
+      await fs.copyFile(inputPath, temporaryOutput);
+      await fs.rename(temporaryOutput, outputPath);
+      return { outputPath, duration: metadata.duration };
+    } catch (error) {
+      await fs.rm(temporaryOutput, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 
   const filters: string[] = [];
   keep.forEach((segment, index) => {
     const start = segment.start.toFixed(6);
     const end = segment.end.toFixed(6);
-    filters.push(`[0:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS[v${index}]`);
+    const resolution = options.resolution ?? "source";
+    const scale = resolution === "source" ? "setsar=1,format=yuv420p" : `scale=-2:${resolution === "720p" ? 720 : resolution === "1080p" ? 1080 : 2160},setsar=1,format=yuv420p`;
+    filters.push(`[0:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,${scale}[v${index}]`);
     if (metadata.hasAudio) filters.push(`[0:a:0]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a${index}]`);
   });
   const concatInputs = keep.map((_, index) => metadata.hasAudio ? `[v${index}][a${index}]` : `[v${index}]`).join("");
@@ -52,7 +67,8 @@ export async function renderTrimmedVideo(inputPath: string, cuts: CutAction[], o
 
   const args = ["-hide_banner", "-v", "error", "-y", "-i", inputPath, "-filter_complex", filters.join(";"), "-map", "[vout]"];
   if (metadata.hasAudio) args.push("-map", "[aout]");
-  args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", "20");
+  const crf = options.quality === "Draft" ? "26" : options.quality === "Premium" ? "17" : "20";
+  args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", crf);
   if (metadata.hasAudio) args.push("-c:a", "aac", "-b:a", "192k");
   args.push("-fps_mode", "vfr", "-movflags", "+faststart", temporaryOutput);
 
@@ -60,8 +76,8 @@ export async function renderTrimmedVideo(inputPath: string, cuts: CutAction[], o
     await execFileAsync(ffmpegPath, args, { timeout: 30 * 60_000, maxBuffer: 8 * 1024 * 1024 });
     const stat = await fs.stat(temporaryOutput);
     if (!stat.isFile() || stat.size === 0) throw new Error("FFmpeg produced an empty output file.");
+    const renderedMetadata = await getVideoMetadata(temporaryOutput);
     await fs.rename(temporaryOutput, outputPath);
-    const renderedMetadata = await getVideoMetadata(outputPath);
     return { outputPath, duration: renderedMetadata.duration };
   } catch (error) {
     await fs.rm(temporaryOutput, { force: true }).catch(() => undefined);
@@ -70,6 +86,12 @@ export async function renderTrimmedVideo(inputPath: string, cuts: CutAction[], o
     if (error instanceof Error && error.message.includes("timed out")) throw new Error("Video export timed out. Try a shorter video or fewer edits.");
     throw new Error("FFmpeg could not render this video. Verify the source media and edit ranges, then try again.");
   }
+}
+
+export async function renderTrimmedVideo(inputPath: string, cuts: CutAction[], outputPath: string, options: RenderOptions = {}) {
+  const metadata = await getVideoMetadata(inputPath);
+  const keep = getKeepIntervals(cuts, metadata.duration);
+  return renderSelectedSegments(inputPath, keep, outputPath, options);
 }
 
 export { getKeepIntervals };

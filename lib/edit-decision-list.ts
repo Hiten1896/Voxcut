@@ -73,7 +73,7 @@ export function addKeepSegment(segments: KeepSegment[], duration: number, at: nu
   if (!gap && position >= cursor && position < duration) gap = { start: cursor, end: duration };
   if (!gap || gap.end - gap.start < 0.1) throw new Error("There is no removed interval at the playhead to restore.");
   const restoredStart = Math.max(gap.start, Math.min(position, gap.end - Math.min(length, gap.end - gap.start)));
-  const restoredEnd = Math.min(gapEnd, restoredStart + length);
+  const restoredEnd = Math.min(gap.end, restoredStart + length);
   const result = [...segments, { id: `restored-${Date.now()}-${Math.round(restoredStart * 1000)}`, start: restoredStart, end: restoredEnd }]
     .sort((a, b) => a.start - b.start);
   return validateKeepSegments(result, duration);

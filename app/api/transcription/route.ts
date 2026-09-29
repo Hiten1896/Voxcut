@@ -40,7 +40,9 @@ export async function GET(request: Request) {
   }
 
   let status = await readStatus(keys.transcriptionStatusKey);
-  if (status.status === "transcribing") {
+  const active = globalThis as typeof globalThis & { __voxcutTranscriptions?: Set<string> };
+  const inFlightKey = `${user.id}:${ids.projectId}:${ids.videoId}`;
+  if (status.status === "transcribing" && !active.__voxcutTranscriptions?.has(inFlightKey)) {
     const startedAt = Date.parse(status.updatedAt ?? "");
     if (!Number.isFinite(startedAt) || Date.now() - startedAt > 15 * 60_000) {
       status = { status: "failed", error: "The previous transcription did not finish. Please retry.", updatedAt: new Date().toISOString() };
@@ -88,20 +90,24 @@ export async function POST(request: Request) {
   }
   active.__voxcutTranscriptions.add(inFlightKey);
   const setStatus = async (status: TranscriptionStatus) => storage.writeJson(keys.transcriptionStatusKey, { ...status, updatedAt: new Date().toISOString() });
-
   try {
     await setStatus({ status: "transcribing" });
-    const transcript = await transcribeStoredVideo(sourcePath, user.id, ids.projectId, ids.videoId);
-    await persistTranscript(storage, keys, transcript);
-    const status: TranscriptionStatus = { status: "completed", updatedAt: new Date().toISOString() };
-    await storage.writeJson(keys.transcriptionStatusKey, status);
-    return NextResponse.json({ status, transcript });
-  } catch (error) {
-    const message = error instanceof TranscriptionError ? error.message : "Transcription failed. Please try again.";
-    const status: TranscriptionStatus = { status: "failed", error: message, updatedAt: new Date().toISOString() };
-    await storage.writeJson(keys.transcriptionStatusKey, status).catch(() => undefined);
-    return NextResponse.json({ status, error: message }, { status: error instanceof TranscriptionError ? error.status : 502 });
-  } finally {
+  } catch {
     active.__voxcutTranscriptions.delete(inFlightKey);
+    return NextResponse.json({ error: "Could not start transcription. Please try again." }, { status: 500 });
   }
+  const runTranscription = async () => {
+    try {
+      const transcript = await transcribeStoredVideo(sourcePath, user.id, ids.projectId, ids.videoId);
+      await persistTranscript(storage, keys, transcript);
+      await storage.writeJson(keys.transcriptionStatusKey, { status: "completed", updatedAt: new Date().toISOString() } satisfies TranscriptionStatus);
+    } catch (error) {
+      const message = error instanceof TranscriptionError ? error.message : "Transcription failed. Please try again.";
+      await storage.writeJson(keys.transcriptionStatusKey, { status: "failed", error: message, updatedAt: new Date().toISOString() } satisfies TranscriptionStatus).catch(() => undefined);
+    } finally {
+      active.__voxcutTranscriptions?.delete(inFlightKey);
+    }
+  };
+  void runTranscription();
+  return NextResponse.json({ status: { status: "transcribing" } }, { status: 202 });
 }

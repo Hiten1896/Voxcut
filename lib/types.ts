@@ -37,6 +37,14 @@ export interface CutAction {
   reason: string;
 }
 
+export type EditOperation = "remove" | "keep" | "extract" | "concise";
+
+export interface GeneratedEditPlan {
+  sourceVideoId: VideoId;
+  operation: EditOperation;
+  cuts: CutAction[];
+}
+
 export interface PromptLogRecord {
   id: string;
   userId: UserId;
@@ -55,6 +63,7 @@ export interface ProjectFile {
   prompt: string;
   transcript: Transcript;
   plan: CutAction[];
+  operation?: EditOperation;
   updatedAt: string;
 }
 

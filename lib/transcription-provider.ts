@@ -17,7 +17,7 @@ export class TranscriptionError extends Error {
 }
 
 export function getGeminiApiKey(): string {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new TranscriptionError("Transcription is not configured. Add GEMINI_API_KEY to the server environment.", 503);
   return apiKey;
 }

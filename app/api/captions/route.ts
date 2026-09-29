@@ -1,42 +1,29 @@
 import { NextResponse } from "next/server";
 
+import { getCurrentUser } from "@/lib/auth";
+import { readOwnedTranscript } from "@/lib/transcript-data";
+import { storage } from "@/lib/storage";
+import { toSrt, toVtt, buildSubtitleCues } from "@/lib/subtitles";
+import { isValidProjectIdentifier } from "@/lib/security";
+
 export const runtime = "nodejs";
 
-function formatTimestamp(seconds: number) {
-  const totalMs = Math.max(0, Math.round(seconds * 1000));
-  const hrs = Math.floor(totalMs / 3600000);
-  const mins = Math.floor((totalMs % 3600000) / 60000);
-  const secs = Math.floor((totalMs % 60000) / 1000);
-  const ms = totalMs % 1000;
-
-  return `${String(hrs).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
-}
-
 export async function POST(request: Request) {
-  const body = (await request.json()) as {
-    transcript?: { segments?: Array<{ start: number; end: number; text?: string }> };
-    style?: string;
-  };
-
-  const transcript = body.transcript ?? { segments: [] };
-  const style = body.style ?? "clean";
-  const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
-
-  const captions = segments.slice(0, 10).map((segment, index) => ({
-    id: `caption-${index + 1}`,
-    start: Number(segment.start ?? 0),
-    end: Number(segment.end ?? segment.start ?? 0),
-    text: String(segment.text ?? `Caption ${index + 1}`).trim() || `Caption ${index + 1}`,
-    style,
-  }));
-
-  const srt = captions
-    .map((caption, index) => {
-      const start = formatTimestamp(caption.start);
-      const end = formatTimestamp(caption.end);
-      return `${index + 1}\n${start} --> ${end}\n${caption.text}\n`;
-    })
-    .join("\n");
-
-  return NextResponse.json({ captions, srt, style });
+  const user = await getCurrentUser(request);
+  if (!user) return NextResponse.json({ error: "Authentication required." }, { status: 401 });
+  let body: unknown;
+  try { body = await request.json(); } catch { return NextResponse.json({ error: "Invalid request body." }, { status: 400 }); }
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  if (typeof record.videoId !== "string" || typeof record.projectId !== "string"
+    || !isValidProjectIdentifier(record.videoId) || !isValidProjectIdentifier(record.projectId)) {
+    return NextResponse.json({ error: "Invalid video or project reference." }, { status: 400 });
+  }
+  const keys = storage.getProjectAssetKeys(user.id, record.projectId, record.videoId);
+  try {
+    const transcript = await readOwnedTranscript(storage, keys, { userId: user.id, projectId: record.projectId, videoId: record.videoId });
+    const cues = buildSubtitleCues(transcript);
+    return NextResponse.json({ cues, srt: toSrt(cues), vtt: toVtt(cues), captionBurnIn: false });
+  } catch {
+    return NextResponse.json({ error: "A valid transcript for this video is not available." }, { status: 404 });
+  }
 }

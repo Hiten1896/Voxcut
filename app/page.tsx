@@ -8,23 +8,23 @@ import { isAllowedVideoUpload } from "@/lib/security";
 const featureCards = [
   {
     icon: "content_cut",
-    title: "Cut by prompt",
-    description: "Trim pauses, filler words, or specific scenes automatically.",
+    title: "Transcript-based edits",
+    description: "Ask Gemini to plan cuts from real transcript text and timestamps. No visual analysis is performed.",
   },
   {
     icon: "subtitles",
-    title: "Auto captions",
-    description: "Word-level animated subtitles styled for your brand.",
+    title: "Subtitle downloads",
+    description: "Download SRT or WebVTT subtitles from recognized speech timestamps. Captions are not burned into video.",
   },
   {
     icon: "view_timeline",
-    title: "Multi-clip assembly",
-    description: "Order multiple takes into a coherent sequence.",
+    title: "Timeline assembly",
+    description: "Concatenate selected sections from the uploaded MP4 into a real MP4 export.",
   },
   {
     icon: "auto_awesome",
-    title: "AI highlights",
-    description: "Extract viral segments and key talking points instantly.",
+    title: "Speech highlights",
+    description: "Find speech-dense passages from the actual timestamped transcript and preview them.",
   },
 ];
 
@@ -122,7 +122,7 @@ export default function HomePage() {
         </div>
 
         <div className="flex items-center gap-3">
-          <button type="button" className="rounded px-3 py-1.5 text-[14px] text-[#bcc9cd] transition-colors hover:text-[#dde2f3]">
+          <button type="button" onClick={goToStudio} className="rounded px-3 py-1.5 text-[14px] text-[#bcc9cd] transition-colors hover:text-[#dde2f3]">
             Sign in
           </button>
           <button

@@ -34,10 +34,10 @@ export async function createPromptLog(record: Omit<PromptLogRecord, "id" | "time
   return newRecord;
 }
 
-export async function updatePromptLogFeedback(id: string, feedback: Feedback): Promise<PromptLogRecord | null> {
+export async function updatePromptLogFeedback(id: string, feedback: Feedback, userId: string): Promise<PromptLogRecord | null> {
   await ensureLogFile();
   const logs = await listPromptLogs();
-  const index = logs.findIndex((entry) => entry.id === id);
+  const index = logs.findIndex((entry) => entry.id === id && entry.userId === userId);
 
   if (index === -1) {
     return null;
