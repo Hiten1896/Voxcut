@@ -22,9 +22,12 @@ export interface Transcript {
   userId: UserId;
   projectId: ProjectId;
   duration: number;
+  text: string;
   segments: TranscriptSegment[];
   words: TranscriptWord[];
-  source: "whisper" | "heuristic";
+  provider: "google";
+  model: "gemini-3.5-transcribe";
+  createdAt: string;
 }
 
 export interface CutAction {

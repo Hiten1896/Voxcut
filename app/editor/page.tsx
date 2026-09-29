@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearPendingUpload, getPendingUpload, setPendingUpload } from "@/lib/pending-upload";
 import { parseStoredVideoReference } from "@/lib/project-media";
 import { isAllowedVideoUpload } from "@/lib/security";
+import type { Transcript } from "@/lib/types";
 
 type HistoryItem = {
   id: string;
@@ -69,6 +70,10 @@ export default function EditorPage() {
   const uploadInFlightRef = useRef(false);
   const lastVideoStorageKey = authUser ? `voxcut:last-video:${authUser.id}` : null;
   const [authLoading, setAuthLoading] = useState(true);
+  const [transcript, setTranscript] = useState<Transcript | null>(null);
+  const [transcriptionVideoId, setTranscriptionVideoId] = useState<string | null>(null);
+  const [transcriptionStatus, setTranscriptionStatus] = useState<"not_started" | "transcribing" | "completed" | "failed">("not_started");
+  const [transcriptionError, setTranscriptionError] = useState("");
 
   useEffect(() => {
     const fetchSession = async () => {
@@ -159,6 +164,12 @@ export default function EditorPage() {
     () => duration > 0 ? Array.from({ length: 6 }, (_, index) => duration * index / 5) : [],
     [duration],
   );
+  const currentTranscript = selectedClip?.videoId === transcriptionVideoId ? transcript : null;
+  const currentTranscriptionStatus = selectedClip?.videoId === transcriptionVideoId ? transcriptionStatus : "not_started";
+  const currentTranscriptionError = selectedClip?.videoId === transcriptionVideoId ? transcriptionError : "";
+  const activeTranscriptIndex = currentTranscript?.segments.findIndex(
+    (segment) => currentTime >= segment.start && currentTime <= segment.end,
+  ) ?? -1;
 
   const timelineSegments = useMemo(() => {
     if (!duration) return [{ start: 0, end: 0, kept: true }];
@@ -201,6 +212,66 @@ export default function EditorPage() {
   }, [duration, timelineSegments]);
 
   const hasClips = clips.length > 0;
+
+  useEffect(() => {
+    const active = document.querySelector<HTMLElement>("[data-active-transcript='true']");
+    if (!active) return;
+    const bounds = active.getBoundingClientRect();
+    if (bounds.top < 0 || bounds.bottom > window.innerHeight) {
+      active.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeTranscriptIndex]);
+
+  useEffect(() => {
+    if (!authUser || !selectedClip?.videoId) {
+      return;
+    }
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const params = new URLSearchParams({ videoId: selectedClip.videoId, projectId: activeProjectId });
+    const loadTranscript = async () => {
+      try {
+        const response = await fetch(`/api/transcription?${params}`, { cache: "no-store" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error ?? "Could not load the saved transcript.");
+        if (cancelled) return;
+        setTranscriptionVideoId(selectedClip.videoId!);
+        setTranscriptionStatus(payload.status?.status ?? "not_started");
+        setTranscript(payload.transcript ?? null);
+        setTranscriptionError(payload.status?.error ?? "");
+        if (payload.status?.status === "transcribing") timer = setTimeout(loadTranscript, 1500);
+      } catch (error: unknown) {
+        if (!cancelled) {
+          setTranscriptionVideoId(selectedClip.videoId!);
+          setTranscriptionError(error instanceof Error ? error.message : "Could not load the saved transcript.");
+        }
+      }
+    };
+    void loadTranscript();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, [activeProjectId, authUser, selectedClip?.videoId]);
+
+  const handleTranscribe = async () => {
+    if (!selectedClip?.videoId) return;
+    setTranscriptionVideoId(selectedClip.videoId);
+    setTranscriptionStatus("transcribing");
+    setTranscriptionError("");
+    setTranscript(null);
+    try {
+      const response = await fetch("/api/transcription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.transcript) throw new Error(payload.error ?? "Transcription failed.");
+      setTranscript(payload.transcript as Transcript);
+      setTranscriptionStatus("completed");
+    } catch (error) {
+      setTranscriptionStatus("failed");
+      setTranscriptionError(error instanceof Error ? error.message : "Transcription failed.");
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -855,6 +926,33 @@ export default function EditorPage() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-3">
+              <section aria-label="Video transcript" className="mb-3 rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h2 className="text-[12px] font-medium uppercase tracking-[0.12em] text-[#4cd7f6]">Transcript</h2>
+                  {selectedClip?.videoId && currentTranscriptionStatus !== "transcribing" && currentTranscriptionStatus !== "completed" ? (
+                    <button type="button" onClick={handleTranscribe} className="rounded border border-[#4cd7f6]/30 px-2 py-1 text-[11px] text-[#4cd7f6] hover:bg-[#4cd7f6]/10">
+                      {currentTranscriptionStatus === "failed" ? "Retry" : "Transcribe video"}
+                    </button>
+                  ) : null}
+                </div>
+                {!selectedClip?.videoId ? <p className="text-[12px] text-[#869397]">Upload a video to transcribe its speech.</p> : null}
+                {currentTranscriptionStatus === "transcribing" ? <p role="status" className="text-[12px] text-[#bcc9cd]">Transcribing the uploaded video…</p> : null}
+                {currentTranscriptionError ? <p role="alert" className="mb-2 text-[12px] text-[#ffb4ab]">{currentTranscriptionError}</p> : null}
+                {currentTranscript && currentTranscript.segments.length === 0 ? <p className="text-[12px] text-[#bcc9cd]">No speech was detected in this video.</p> : null}
+                {currentTranscript?.text ? <p className="mb-2 text-[12px] leading-5 text-[#dde2f3]">{currentTranscript.text}</p> : null}
+                {currentTranscript?.segments.map((segment, index) => (
+                  <button
+                    key={`${segment.start}-${index}`}
+                    type="button"
+                    data-active-transcript={index === activeTranscriptIndex ? "true" : "false"}
+                    aria-current={index === activeTranscriptIndex ? "time" : undefined}
+                    onClick={() => handleScrub(segment.start)}
+                    className={`block w-full border-t border-[#3d494c]/20 py-2 text-left text-[12px] ${index === activeTranscriptIndex ? "bg-[#4cd7f6]/10 text-[#4cd7f6]" : "text-[#dde2f3]"}`}
+                  >
+                    <span className="mr-2 font-mono text-[#869397]">{formatTime(segment.start)}–{formatTime(segment.end)}</span>{segment.text}
+                  </button>
+                ))}
+              </section>
               <div className="flex flex-col gap-2.5">
                 {history.length > 0 ? history.map((entry) => (
                   <div key={entry.id} className="flex flex-col gap-2 rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-3">

@@ -2,12 +2,10 @@ import { NextResponse } from "next/server";
 
 import type { ProjectFile, Transcript } from "@/lib/types";
 import { getCurrentUser } from "@/lib/auth";
-import { jobQueue } from "@/lib/job-queue";
 import { createPromptLog } from "@/lib/prompt-log";
 import { getClientKey, isValidProjectIdentifier, rateLimitAllow, sanitizePrompt } from "@/lib/security";
 import { storage } from "@/lib/storage";
-import { generateCutPlanFromPrompt, validateCutPlan } from "@/lib/llm-cut-planner";
-import { renderTrimmedVideo } from "@/lib/render";
+import { generateCutPlanFromPrompt } from "@/lib/llm-cut-planner";
 
 export const runtime = "nodejs";
 
@@ -48,8 +46,16 @@ export async function POST(request: Request) {
   const assetPaths = storage.getProjectAssetKeys(userId, projectId, body.videoId);
 
   const transcript = await storage.readJson<Transcript>(assetPaths.transcriptKey);
-  const rawPlan = await generateCutPlanFromPrompt(prompt, transcript);
-  const plan = validateCutPlan(rawPlan);
+  if (!transcript || transcript.userId !== userId || transcript.projectId !== projectId || transcript.videoId !== body.videoId) {
+    return NextResponse.json({ error: "A transcript for this video is required before planning edits." }, { status: 404 });
+  }
+  let plan;
+  try {
+    plan = await generateCutPlanFromPrompt(prompt, transcript);
+  } catch (error) {
+    const status = Number((error as { status?: number })?.status) || 502;
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create edit plan." }, { status });
+  }
 
   const projectFileKey = `users/${userId}/projects/${projectId}/project-v1.json`;
   const projectFile: ProjectFile = {
@@ -64,9 +70,6 @@ export async function POST(request: Request) {
 
   await storage.writeJson(projectFileKey, projectFile);
 
-  const outputPath = storage.resolveKey(assetPaths.exportKey);
-  await renderTrimmedVideo(storage.resolveKey(assetPaths.sourceKey), plan, outputPath);
-
   const log = await createPromptLog({
     userId,
     projectId,
@@ -74,17 +77,6 @@ export async function POST(request: Request) {
     transcriptSnippet: transcript.segments.map((segment) => segment.text).slice(0, 4).join(" "),
     editPlanJson: plan,
     feedback: null,
-  });
-
-  jobQueue.enqueue({
-    type: "render",
-    payload: {
-      userId,
-      projectId,
-      videoId: body.videoId,
-      prompt,
-      plan,
-    },
   });
 
   const durationBefore = transcript.duration;
@@ -95,7 +87,6 @@ export async function POST(request: Request) {
 
   return NextResponse.json({
     plan,
-    outputUrl: `/api/media?key=${encodeURIComponent(assetPaths.exportKey)}`,
     durationBefore,
     durationAfter,
     transcript,

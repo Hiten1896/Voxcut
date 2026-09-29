@@ -12,8 +12,7 @@ export type { VideoMetadata } from "@/lib/video-metadata-format";
 export async function getVideoMetadata(filePath: string): Promise<VideoMetadata> {
   const { stdout } = await execFileAsync(ffprobePath, [
     "-v", "error",
-    "-select_streams", "v:0",
-    "-show_entries", "stream=width,height:format=duration",
+    "-show_entries", "stream=codec_type,width,height:format=duration",
     "-of", "json",
     filePath,
   ], { timeout: 30_000, maxBuffer: 1024 * 1024 });

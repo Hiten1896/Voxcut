@@ -8,6 +8,7 @@ export interface ProjectAssetPaths {
   videoDir: string;
   sourceKey: string;
   transcriptKey: string;
+  transcriptionStatusKey: string;
   exportKey: string;
 }
 
@@ -34,6 +35,7 @@ export class LocalStorageAdapter implements StorageAdapter {
     const videoDir = this.getProjectVideoDir(userId, projectId, videoId);
     const sourceKey = `users/${userId}/projects/${projectId}/videos/${videoId}/source.mp4`;
     const transcriptKey = `users/${userId}/projects/${projectId}/videos/${videoId}/transcript.json`;
+    const transcriptionStatusKey = `users/${userId}/projects/${projectId}/videos/${videoId}/transcription-status.json`;
     const exportKey = `users/${userId}/projects/${projectId}/videos/${videoId}/exports/trimmed-output.mp4`;
 
     return {
@@ -41,6 +43,7 @@ export class LocalStorageAdapter implements StorageAdapter {
       videoDir,
       sourceKey,
       transcriptKey,
+      transcriptionStatusKey,
       exportKey,
     };
   }

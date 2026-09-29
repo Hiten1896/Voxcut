@@ -2,152 +2,81 @@ import { z } from "zod";
 
 import type { CutAction, Transcript } from "@/lib/types";
 
-export const CutActionSchema = z.object({
+const CutActionSchema = z.object({
   action: z.literal("cut"),
-  start: z.number().nonnegative(),
-  end: z.number().nonnegative(),
-  reason: z.string().min(1),
-});
+  start: z.number().finite().nonnegative(),
+  end: z.number().finite().positive(),
+  reason: z.string().trim().min(1).max(300),
+}).strict();
 
-export const CutPlanSchema = z.array(CutActionSchema);
+const CutPlanSchema = z.object({ cuts: z.array(CutActionSchema).max(200) }).strict();
 
-export function validateCutPlan(input: unknown): CutAction[] {
-  const parseResult = CutPlanSchema.safeParse(input);
+export function validateCutPlan(input: unknown, duration: number): CutAction[] {
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error("The source video duration is invalid.");
+  const parsed = CutPlanSchema.safeParse(input);
+  if (!parsed.success) throw new Error("Gemini returned an invalid edit plan.");
 
-  if (!parseResult.success) {
-    throw new Error(parseResult.error.issues.map((issue) => issue.message).join(", "));
-  }
+  const cuts = parsed.data.cuts.map((cut) => ({
+    ...cut,
+    start: Number(cut.start.toFixed(3)),
+    end: Number(cut.end.toFixed(3)),
+  })).sort((a, b) => a.start - b.start);
 
-  // Sort by start time and clamp precision
-  const sorted = parseResult.data
-    .filter((cut) => cut.end > cut.start)
-    .map((op) => ({
-      ...op,
-      start: Number(op.start.toFixed(3)),
-      end: Number(op.end.toFixed(3)),
-    }))
-    .sort((a, b) => a.start - b.start);
-
-  // Merge overlapping cut intervals
-  const merged: CutAction[] = [];
-  for (const cut of sorted) {
-    if (merged.length === 0) {
-      merged.push({ ...cut });
-      continue;
+  let previousEnd = 0;
+  for (const cut of cuts) {
+    if (cut.end <= cut.start || cut.end > duration || cut.start < previousEnd) {
+      throw new Error("Gemini returned cut times outside the video or overlapping another cut.");
     }
-
-    const prev = merged[merged.length - 1];
-    if (cut.start <= prev.end) {
-      prev.end = Math.max(prev.end, cut.end);
-      prev.reason = `${prev.reason} + ${cut.reason}`;
-    } else {
-      merged.push({ ...cut });
-    }
+    previousEnd = cut.end;
   }
-
-  return merged;
+  return cuts;
 }
 
-export async function generateCutPlanFromPrompt(prompt: string, transcript: Transcript): Promise<CutAction[]> {
+export async function generateCutPlanFromPrompt(
+  prompt: string,
+  transcript: Transcript,
+  fetcher: typeof fetch = fetch,
+): Promise<CutAction[]> {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
-
   if (!apiKey) {
-    console.warn("GEMINI_API_KEY is not set. Using transcript silence heuristics.");
-    return generateHeuristicCutPlan(prompt, transcript);
+    const error = new Error("AI edit planning is unavailable because GEMINI_API_KEY is not configured.") as Error & { status: number };
+    error.status = 503;
+    throw error;
   }
 
-  const duration = transcript.duration || 10;
-  const segmentsContext = transcript.segments.map((s, idx) => ({
-    index: idx + 1,
-    start: s.start,
-    end: s.end,
-    text: s.text,
-    isSilence: Boolean(s.isSilence),
-  }));
-
-  const systemPrompt = `You are a professional video editing AI assistant for Voxcut.
-Your task is to analyze the video transcript, timestamps, and the user's editing instruction to produce a precise list of time intervals to CUT OUT (remove) from the video.
-
-VIDEO DURATION: ${duration.toFixed(2)} seconds
-TRANSCRIPT SEGMENTS:
-${JSON.stringify(segmentsContext, null, 2)}
-
-USER EDIT PROMPT: "${prompt}"
-
-RULES:
-1. Return intervals that must be REMOVED (cut out). Do not list segments to keep.
-2. Every cut must satisfy 0 <= start < end <= ${duration.toFixed(2)}.
-3. Action must always be "cut".
-4. Give a clear, concise reason for each cut (e.g. "User requested trimming pause", "Removed filler phrase").
-5. If the user asks to remove silences/pauses, identify segments marked as silence or natural gaps between words.
-6. If the user asks to keep only a specific section, create cuts for everything before that section and everything after it.
-7. Return valid JSON adhering to the specified schema: { "cuts": [{ "action": "cut", "start": number, "end": number, "reason": string }] }`;
-
-  const models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"];
-
-  for (const model of models) {
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: systemPrompt }] }],
-          generationConfig: {
-            responseMimeType: "application/json",
-            temperature: 0.1,
+  const duration = transcript.duration;
+  const transcriptContext = transcript.words.length > 0
+    ? transcript.words
+    : transcript.segments;
+  const response = await fetcher("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: "Create a video edit plan from the user's request and timestamped transcript. Return only cut intervals to remove. Do not invent transcript content or use times outside the source video. An empty cuts array means keep the source unchanged." }] },
+      contents: [{ role: "user", parts: [{ text: JSON.stringify({ prompt, duration, transcript: transcriptContext }) }] }],
+      generationConfig: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            cuts: { type: "ARRAY", items: { type: "OBJECT", properties: {
+              action: { type: "STRING", enum: ["cut"] },
+              start: { type: "NUMBER" },
+              end: { type: "NUMBER" },
+              reason: { type: "STRING" },
+            }, required: ["action", "start", "end", "reason"] } },
           },
-        }),
-      });
+          required: ["cuts"],
+        },
+      },
+    }),
+  });
+  if (!response.ok) throw new Error("Gemini could not create an edit plan. Please try again.");
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.warn(`Gemini model ${model} returned ${response.status}: ${errorText.slice(0, 150)}`);
-        continue;
-      }
-
-      const data = (await response.json()) as {
-        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-      };
-
-      const rawJsonText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!rawJsonText) continue;
-
-      const parsed = JSON.parse(rawJsonText);
-      const rawCuts = Array.isArray(parsed) ? parsed : parsed.cuts || parsed.plan || [];
-
-      const sanitized = rawCuts.map((cut: Record<string, unknown>) => ({
-        action: "cut",
-        start: Math.max(0, Number(cut.start ?? 0)),
-        end: Math.min(duration, Number(cut.end ?? 0)),
-        reason: String(cut.reason || "Trimmed according to prompt"),
-      }));
-
-      const validated = validateCutPlan(sanitized);
-      return validated;
-    } catch (err) {
-      console.warn(`Error generating cut plan with model ${model}:`, err);
-    }
-  }
-
-  // If all Gemini models fail or rate limit, fallback to heuristic
-  return generateHeuristicCutPlan(prompt, transcript);
-}
-
-function generateHeuristicCutPlan(prompt: string, transcript: Transcript): CutAction[] {
-  const lowerPrompt = prompt.toLowerCase();
-  const silenceSegments = transcript.segments.filter((segment) => segment.isSilence);
-
-  if (lowerPrompt.includes("silence") || lowerPrompt.includes("pause") || lowerPrompt.includes("remove")) {
-    if (silenceSegments.length > 0) {
-      return silenceSegments.map((segment) => ({
-        action: "cut",
-        start: Number(segment.start.toFixed(3)),
-        end: Number(segment.end.toFixed(3)),
-        reason: "Detected silence",
-      }));
-    }
-  }
-
-  return [];
+  const data = await response.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+  const text = data.candidates?.[0]?.content?.parts?.find((part) => part.text)?.text;
+  if (!text) throw new Error("Gemini returned an empty edit plan.");
+  let plan: unknown;
+  try { plan = JSON.parse(text); } catch { throw new Error("Gemini returned an unreadable edit plan."); }
+  return validateCutPlan(plan, duration);
 }
