@@ -2,6 +2,8 @@
 
 import { useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
+import { setPendingUpload } from "@/lib/pending-upload";
+import { isAllowedVideoUpload } from "@/lib/security";
 
 const featureCards = [
   {
@@ -91,10 +93,20 @@ export default function HomePage() {
 
   const goToStudio = () => router.push("/editor");
 
-  const handleFile = (fileList?: FileList | null) => {
-    if (fileList && fileList.length > 0) {
-      setDropMessage(`Processing "${fileList[0].name}"...`);
+  const handleFile = async (file?: File | null) => {
+    if (!file) return;
+    const validation = isAllowedVideoUpload(file);
+    if (!validation.ok) {
+      setDropMessage(validation.reason ?? "Please choose an MP4 video.");
+      return;
+    }
+    setDropMessage(`Saving "${file.name}" in this browser...`);
+    try {
+      await setPendingUpload(file);
+      setDropMessage(`"${file.name}" is saved in this browser. Sign in to upload it.`);
       router.push("/editor");
+    } catch (error) {
+      setDropMessage(error instanceof Error ? error.message : "Could not save the selected video. Please choose it again.");
     }
   };
 
@@ -133,7 +145,7 @@ export default function HomePage() {
             Edit video by typing
           </h1>
           <p className="text-[16px] leading-relaxed text-[#bcc9cd]">
-            Describe your cuts, reorders, and captions in plain English — Voxcut turns prompts into polished edits.
+            Upload a video and start with real playback in the editor. More editing tools are in development.
           </p>
         </section>
 
@@ -159,16 +171,21 @@ export default function HomePage() {
             onDrop={(event) => {
               event.preventDefault();
               setDragActive(false);
-              handleFile(event.dataTransfer.files);
+              void handleFile(event.dataTransfer.files[0]);
             }}
-            onClick={goToStudio}
+            onClick={() => inputRef.current?.click()}
           >
             <input
               ref={inputRef}
               type="file"
-              accept="video/mp4,video/quicktime,video/x-m4v"
+              accept="video/mp4"
               className="hidden"
-              onChange={(event) => handleFile(event.target.files)}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                event.currentTarget.value = "";
+                void handleFile(file);
+              }}
             />
 
             <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-lg border border-white/[0.08] bg-[#1a202c] text-[#4cd7f6] transition-all duration-150 group-hover:scale-105 group-hover:border-[#4cd7f6]/40">
@@ -179,7 +196,7 @@ export default function HomePage() {
               Drop a video to start editing
             </h3>
             <p className="mb-6 text-[12px] text-[#bcc9cd]">
-              MP4, MOV, or ProRes up to 4GB
+              MP4 up to 250MB
             </p>
 
             <button
@@ -210,7 +227,7 @@ export default function HomePage() {
                   </span>
                   <span className="text-[16px] font-medium text-[#dde2f3]">{card.title}</span>
                 </div>
-                <p className="text-[13px] leading-snug text-[#bcc9cd]">{card.description}</p>
+                <p className="text-[13px] leading-snug text-[#bcc9cd]">In development — {card.description}</p>
               </div>
             ))}
           </div>

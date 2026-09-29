@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { clearPendingUpload, getPendingUpload, setPendingUpload } from "@/lib/pending-upload";
+import { parseStoredVideoReference } from "@/lib/project-media";
+import { isAllowedVideoUpload } from "@/lib/security";
 
 type HistoryItem = {
   id: string;
@@ -47,8 +50,11 @@ export default function EditorPage() {
   const [editPlan, setEditPlan] = useState<Array<{ action: "cut"; start: number; end: number; reason?: string }>>([]);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [mediaReady, setMediaReady] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [pendingFileLoaded, setPendingFileLoaded] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   const [volume, setVolume] = useState(0.8);
-  const [isDragging, setIsDragging] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [authUser, setAuthUser] = useState<SessionUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
@@ -60,6 +66,9 @@ export default function EditorPage() {
   const [exportFormat, setExportFormat] = useState("MP4");
   const [exportResolution, setExportResolution] = useState("1080p");
   const [exportQuality, setExportQuality] = useState("High");
+  const uploadInFlightRef = useRef(false);
+  const lastVideoStorageKey = authUser ? `voxcut:last-video:${authUser.id}` : null;
+  const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
     const fetchSession = async () => {
@@ -74,6 +83,8 @@ export default function EditorPage() {
         setAuthUser(payload.user ?? null);
       } catch {
         setAuthUser(null);
+      } finally {
+        setAuthLoading(false);
       }
     };
 
@@ -122,6 +133,9 @@ export default function EditorPage() {
 
   const handleSignOut = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
+    if (authUser && typeof window !== "undefined") {
+      try { localStorage.removeItem(`voxcut:last-video:${authUser.id}`); } catch { /* local storage may be unavailable */ }
+    }
     setAuthUser(null);
     setProjectName("untitled project");
     setChatMessages([]);
@@ -138,9 +152,13 @@ export default function EditorPage() {
   );
 
   const duration = selectedClip?.duration || 0;
-  const progressPct = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const progressPct = duration > 0 ? Math.max(0, Math.min((currentTime / duration) * 100, 100)) : 0;
   const activeProjectId = useMemo(() => (authUser ? `project-${authUser.id.slice(0, 8)}` : "default-project"), [authUser]);
   const historyCountLabel = history.length === 1 ? "1 edit" : `${history.length} edits`;
+  const timelineTicks = useMemo(
+    () => duration > 0 ? Array.from({ length: 6 }, (_, index) => duration * index / 5) : [],
+    [duration],
+  );
 
   const timelineSegments = useMemo(() => {
     if (!duration) return [{ start: 0, end: 0, kept: true }];
@@ -178,11 +196,155 @@ export default function EditorPage() {
     return timelineSegments.map((segment, index) => ({
       ...segment,
       label: segment.kept ? `Scene ${index + 1}` : `Cut ${index + 1}`,
-      width: Math.max(10, (((segment.end - segment.start) / Math.max(duration, 0.01)) * 100)),
+      width: (((segment.end - segment.start) / Math.max(duration, 0.01)) * 100),
     }));
   }, [duration, timelineSegments]);
 
   const hasClips = clips.length > 0;
+
+  useEffect(() => {
+    let cancelled = false;
+    getPendingUpload()
+      .then((file) => { if (!cancelled) setPendingFile(file); })
+      .catch((error: unknown) => {
+        if (!cancelled) setStatus(error instanceof Error ? error.message : "Could not restore the selected video.");
+      })
+      .finally(() => { if (!cancelled) setPendingFileLoaded(true); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!authUser || !lastVideoStorageKey) return;
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      try {
+        const stored = localStorage.getItem(lastVideoStorageKey);
+        if (!stored) return;
+        const reference = parseStoredVideoReference(JSON.parse(stored), window.location.origin);
+        if (!reference || reference.projectId !== activeProjectId) {
+          localStorage.removeItem(lastVideoStorageKey);
+          return;
+        }
+        const clip: LoadedClip = {
+          id: reference.videoId,
+          videoId: reference.videoId,
+          name: reference.name,
+          url: reference.sourceUrl,
+          duration: reference.duration,
+        };
+        setClips((previous) => previous.length ? previous : [clip]);
+        setSelectedClipId((previous) => previous ?? clip.id);
+        setProjectName(reference.name.replace(/\.mp4$/i, ""));
+      } catch {
+        setStatus("The saved video reference could not be restored. Upload the MP4 again.");
+      }
+    });
+    return () => { cancelled = true; };
+  }, [activeProjectId, authUser, lastVideoStorageKey]);
+
+  const uploadFile = useCallback(async (file: File, isPending = false) => {
+    if (!authUser) {
+      setStatus("Please sign in before uploading a video.");
+      return;
+    }
+    const validation = isAllowedVideoUpload(file);
+    if (!validation.ok) {
+      setStatus(validation.reason ?? "Please choose an MP4 video.");
+      return;
+    }
+    if (uploadInFlightRef.current) return;
+
+    uploadInFlightRef.current = true;
+    setIsUploading(true);
+    setStatus(`Uploading ${file.name}...`);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("projectId", activeProjectId);
+      const response = await fetch("/api/upload", { method: "POST", body: formData });
+      const payload = await response.json().catch(() => ({})) as {
+        error?: string;
+        videoId?: string;
+        userId?: string;
+        projectId?: string;
+        sourceUrl?: string;
+        duration?: number;
+      };
+      if (!response.ok) throw new Error(payload.error ?? (response.status === 401 ? "Your session expired. Sign in again to upload this video." : `Upload failed (${response.status}).`));
+      if (!payload.videoId || payload.userId !== authUser.id || payload.projectId !== activeProjectId) {
+        throw new Error("The server returned an invalid video reference. Please retry the upload.");
+      }
+      const mediaUrl = payload.sourceUrl ? new URL(payload.sourceUrl, window.location.origin) : null;
+      if (!mediaUrl || mediaUrl.origin !== window.location.origin || mediaUrl.pathname !== "/api/media") {
+        throw new Error("The server did not return a usable media URL. Please retry the upload.");
+      }
+      const actualDuration = Number(payload.duration);
+      if (!Number.isFinite(actualDuration) || actualDuration <= 0) {
+        throw new Error("The uploaded MP4 has no readable video duration.");
+      }
+
+      let pendingCleanupWarning = false;
+      if (isPending) {
+        try {
+          await clearPendingUpload();
+        } catch {
+          pendingCleanupWarning = true;
+        }
+        setPendingFile(null);
+      }
+      const clip: LoadedClip = {
+        id: payload.videoId,
+        videoId: payload.videoId,
+        name: file.name,
+        url: `${mediaUrl.pathname}${mediaUrl.search}`,
+        duration: actualDuration,
+      };
+      let restoreWarning = false;
+      try {
+        localStorage.setItem(lastVideoStorageKey!, JSON.stringify({
+          videoId: clip.videoId,
+          projectId: activeProjectId,
+          name: clip.name,
+          sourceUrl: clip.url,
+          duration: clip.duration,
+        }));
+      } catch {
+        restoreWarning = true;
+      }
+      setClips((previous) => [...previous, clip]);
+      setSelectedClipId(clip.id);
+      setProjectName(file.name.replace(/\.mp4$/i, ""));
+      setOutputUrl(null);
+      setCurrentTime(0);
+      setMediaReady(false);
+      setIsPlaying(false);
+      setChatMessages([{ role: "assistant", text: "Video uploaded. Loading stored media…" }]);
+      setStatus(pendingCleanupWarning
+        ? "Video uploaded, but the browser could not clear its saved retry copy."
+        : restoreWarning ? "Video uploaded, but this browser could not remember it for reload." : "");
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Upload failed. Please retry.");
+    } finally {
+      uploadInFlightRef.current = false;
+      setIsUploading(false);
+    }
+  }, [activeProjectId, authUser, lastVideoStorageKey]);
+
+  useEffect(() => {
+    if (!authUser || !pendingFileLoaded || !pendingFile || uploadInFlightRef.current) return;
+    void uploadFile(pendingFile, true);
+  }, [authUser, pendingFile, pendingFileLoaded, uploadFile]);
+
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 text-slate-50">
+        <div role="status" className="rounded-2xl border border-white/[0.08] bg-white/[0.02] px-5 py-4 text-[13px] text-slate-300">
+          Checking your session…
+        </div>
+      </main>
+    );
+  }
 
   if (!authUser) {
     return (
@@ -247,6 +409,7 @@ export default function EditorPage() {
             </div>
 
             {authError ? <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-[12px] text-red-200">{authError}</div> : null}
+            {status ? <div role="status" className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-100">{status}</div> : null}
 
             <button
               type="submit"
@@ -260,64 +423,34 @@ export default function EditorPage() {
           <div className="mt-5 rounded-2xl border border-white/[0.06] bg-slate-950/60 p-3 text-[12px] leading-6 text-slate-400">
             Free-first security: sessions use signed cookies, user folders are isolated, and uploads are validated before they reach storage.
           </div>
+          {pendingFile ? (
+            <div role="status" className="mt-3 rounded-xl border border-cyan-400/20 bg-cyan-400/5 p-3 text-[12px] text-cyan-200">
+              {pendingFile.name} is saved in this browser. Sign in and it will upload into this editor.
+            </div>
+          ) : !pendingFileLoaded ? (
+            <div role="status" className="mt-3 text-[12px] text-slate-400">Checking for a saved video…</div>
+          ) : null}
         </div>
       </main>
     );
   }
 
-  const uploadFile = async (file: File) => {
-    if (!authUser) {
-      setStatus("Please sign in before uploading a video.");
-      return;
-    }
-
-    if (!file.type.startsWith("video/")) {
-      setStatus("Please choose a video file.");
-      return;
-    }
-
-    const objectUrl = URL.createObjectURL(file);
-    const clipId = crypto.randomUUID();
-    const newClip: LoadedClip = { id: clipId, name: file.name, url: objectUrl, duration: 0 };
-
-    setClips((previous) => [...previous, newClip]);
-    setSelectedClipId(clipId);
-    setChatMessages([{ role: "assistant", text: "Video received. Tell me the angle or pacing you want for this edit." }]);
-    setStatus(`Loading ${file.name}...`);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append("projectId", activeProjectId);
-
-      const response = await fetch("/api/upload", { method: "POST", body: formData });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Upload failed.");
-
-      setClips((previous) =>
-        previous.map((clip) =>
-          clip.id === clipId
-            ? { ...clip, duration: Number(payload.duration ?? 0), videoId: payload.videoId }
-            : clip,
-        ),
-      );
-      setStatus("");
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Upload failed.");
-    }
-  };
-
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (file) await uploadFile(file);
-  };
-
-  const handleDrop = async (event: React.DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setIsDragging(false);
-    const file = event.dataTransfer.files?.[0];
-    if (file) await uploadFile(file);
+    if (!file) return;
+    const validation = isAllowedVideoUpload(file);
+    if (!validation.ok) {
+      setStatus(validation.reason ?? "Please choose an MP4 video.");
+      return;
+    }
+    try {
+      await setPendingUpload(file);
+      setPendingFile(file);
+      await uploadFile(file, true);
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : "Could not save the selected video.");
+    }
   };
 
   const handleGenerate = async () => {
@@ -381,11 +514,17 @@ export default function EditorPage() {
 
   const togglePlayback = async () => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      setStatus("The uploaded video is still loading.");
+      return;
+    }
 
     if (video.paused) {
-      await video.play();
-      setIsPlaying(true);
+      try {
+        await video.play();
+      } catch {
+        setStatus("Video playback could not start. Try again after the video finishes loading.");
+      }
       return;
     }
 
@@ -397,8 +536,16 @@ export default function EditorPage() {
     const video = videoRef.current;
     if (!video) return;
 
-    video.currentTime = nextTime;
-    setCurrentTime(nextTime);
+    if (video.readyState < HTMLMediaElement.HAVE_METADATA || !Number.isFinite(video.duration)) return;
+    const safeTime = Math.max(0, Math.min(nextTime, video.duration));
+    video.currentTime = safeTime;
+    setCurrentTime(safeTime);
+  };
+
+  const seekBy = (offset: number) => {
+    const video = videoRef.current;
+    if (!video || video.readyState < HTMLMediaElement.HAVE_METADATA) return;
+    handleScrub(video.currentTime + offset);
   };
 
   const toggleMute = () => {
@@ -438,7 +585,7 @@ export default function EditorPage() {
 
             <div className="flex items-center gap-1.5 text-[11px] text-[#bcc9cd]">
               <span className="h-1.5 w-1.5 rounded-full bg-[#06b6d4]" />
-              <span>All edits saved</span>
+              <span>Local editor</span>
             </div>
           </div>
         </div>
@@ -470,6 +617,9 @@ export default function EditorPage() {
             </svg>
           </button>
 
+          <button type="button" onClick={() => fileInputRef.current?.click()} disabled={isUploading} className="rounded-lg border border-[#3d494c]/40 px-3 py-2 text-[12px] text-[#dde2f3] disabled:opacity-50">
+            Upload MP4
+          </button>
           <button
             type="button"
             onClick={() => setShowExport(true)}
@@ -484,6 +634,18 @@ export default function EditorPage() {
           </button>
         </div>
       </header>
+
+      {status ? (
+        <div role="status" aria-live="polite" className="fixed left-1/2 top-16 z-50 max-w-[min(90vw,40rem)] -translate-x-1/2 rounded-lg border border-[#4cd7f6]/25 bg-[#161c28] px-4 py-2 text-[13px] text-[#dde2f3] shadow-xl">
+          {status}
+          {authUser && pendingFile && !isUploading ? (
+            <div className="mt-2 flex gap-3">
+              <button type="button" onClick={() => void uploadFile(pendingFile, true)} className="text-[#4cd7f6] underline">Retry upload</button>
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="text-[#bcc9cd] underline">Choose another MP4</button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <aside className="fixed bottom-0 left-0 top-14 z-30 flex w-14 flex-col items-center justify-between border-r border-[#3d494c]/30 bg-[#0e131f] py-3">
         <div className="flex w-full flex-col items-center gap-2">
@@ -541,13 +703,33 @@ export default function EditorPage() {
                       playsInline
                       disablePictureInPicture
                       onContextMenu={(e) => e.preventDefault()}
-                      onTimeUpdate={(e) => setCurrentTime(e.currentTarget.currentTime)}
+                      onLoadStart={() => setMediaReady(false)}
+                      onTimeUpdate={(e) => {
+                        const time = e.currentTarget.currentTime;
+                        if (Number.isFinite(time)) setCurrentTime(time);
+                      }}
                       onLoadedMetadata={(e) => {
-                        setCurrentTime(e.currentTarget.currentTime);
-                        e.currentTarget.volume = volume;
+                        const video = e.currentTarget;
+                        const actualDuration = video.duration;
+                        if (!Number.isFinite(actualDuration) || actualDuration <= 0) {
+                          setStatus("The uploaded file has no readable video duration.");
+                          return;
+                        }
+                        setClips((previous) => previous.map((clip) => clip.id === selectedClip.id ? { ...clip, duration: actualDuration } : clip));
+                        setCurrentTime(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+                        video.volume = volume;
+                        setMediaReady(true);
+                        setChatMessages([{ role: "assistant", text: "Video uploaded. Playback is ready in the editor." }]);
+                        setStatus("");
                       }}
                       onPlay={() => setIsPlaying(true)}
                       onPause={() => setIsPlaying(false)}
+                      onError={() => {
+                        setMediaReady(false);
+                        setIsPlaying(false);
+                        setChatMessages([{ role: "assistant", text: "The video was uploaded, but the stored media could not be loaded." }]);
+                        setStatus("The uploaded video could not be loaded. Check the media connection or upload it again.");
+                      }}
                     />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(52,211,153,0.08),transparent_55%),#050b15] text-center">
@@ -571,7 +753,7 @@ export default function EditorPage() {
 
                   <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded border border-[#3d494c]/30 bg-[#0e131f]/80 px-2 py-0.5 text-[11px] text-[#4cd7f6]">
                     <span className="h-1.5 w-1.5 rounded-full bg-[#4cd7f6] animate-pulse" />
-                    <span>AI track active</span>
+                    <span>{selectedClip ? "Uploaded video" : "No video loaded"}</span>
                   </div>
                 </div>
               </div>
@@ -594,13 +776,13 @@ export default function EditorPage() {
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <button type="button" className="p-1 text-[#bcc9cd] transition-colors hover:text-[#dde2f3]" aria-label="Rewind 5 seconds">
+                  <button type="button" onClick={() => seekBy(-5)} disabled={!mediaReady} className="p-1 text-[#bcc9cd] transition-colors hover:text-[#dde2f3] disabled:opacity-40" aria-label="Rewind 5 seconds">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
                       <path d="M11 7v10l-7-5 7-5Z" />
                       <path d="M21 7v10" />
                     </svg>
                   </button>
-                  <button type="button" onClick={togglePlayback} className="flex h-8 w-8 items-center justify-center rounded-full bg-[#4cd7f6] text-[#0e131f] transition-colors hover:bg-[#5de6ff]" aria-label="Play video">
+                  <button type="button" onClick={togglePlayback} disabled={!mediaReady} className="flex h-8 w-8 items-center justify-center rounded-full bg-[#4cd7f6] text-[#0e131f] transition-colors hover:bg-[#5de6ff] disabled:cursor-wait disabled:opacity-50" aria-label={isPlaying ? "Pause video" : "Play video"}>
                     {isPlaying ? (
                       <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
                         <rect x="6" y="5" width="4" height="14" rx="1" />
@@ -612,7 +794,18 @@ export default function EditorPage() {
                       </svg>
                     )}
                   </button>
-                  <button type="button" className="p-1 text-[#bcc9cd] transition-colors hover:text-[#dde2f3]" aria-label="Forward 5 seconds">
+                  <input
+                    type="range"
+                    aria-label="Seek video"
+                    min={0}
+                    max={duration || 0}
+                    step={0.05}
+                    value={Math.min(currentTime, duration || 0)}
+                    onChange={(event) => handleScrub(Number(event.currentTarget.value))}
+                    disabled={!mediaReady || duration <= 0}
+                    className="w-36 accent-[#4cd7f6] disabled:opacity-40"
+                  />
+                  <button type="button" onClick={() => seekBy(5)} disabled={!mediaReady} className="p-1 text-[#bcc9cd] transition-colors hover:text-[#dde2f3] disabled:opacity-40" aria-label="Forward 5 seconds">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
                       <path d="M13 7v10l7-5-7-5Z" />
                       <path d="M3 7v10" />
@@ -621,7 +814,7 @@ export default function EditorPage() {
                 </div>
 
                 <div className="flex items-center gap-2 text-[11px] text-[#bcc9cd]">
-                  <span className="font-mono">{selectedClip ? `${Math.max(1, Math.round(duration / 60))}s runtime` : "Waiting for media"}</span>
+                  <span className="font-mono">{selectedClip ? (mediaReady ? `${formatTime(duration)} runtime` : "Loading video metadata") : "Waiting for media"}</span>
                   <button type="button" className="p-1 transition-colors hover:text-[#dde2f3]" aria-label="Fullscreen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                       <path d="M8 3H3v5" />
@@ -719,21 +912,20 @@ export default function EditorPage() {
 
               <div className="mt-2 flex items-center justify-between px-1 text-[11px] text-[#bcc9cd]">
                 <span>Press Enter to generate</span>
-                <span className="font-mono text-[#869397]">GPT-4o Vision</span>
+                <span className="font-mono text-[#869397]">Cut planning service</span>
               </div>
             </div>
           </aside>
         </div>
 
         <footer className="relative h-32 shrink-0 border-t border-[#3d494c]/30 bg-[#161c28]">
-          <div className="flex h-6 items-center justify-between border-b border-[#3d494c]/30 bg-[#0e131f] px-4 text-[11px] text-[#bcc9cd] font-mono">
-            <div className="flex items-center gap-12">
-              <span>00:00:00</span>
-              <span>00:00:42</span>
-              <span>00:01:24</span>
-              <span>00:02:15</span>
-              <span>00:03:00</span>
-              <span>00:03:40</span>
+          <div className="relative flex h-6 items-center border-b border-[#3d494c]/30 bg-[#0e131f] px-4 text-[11px] text-[#bcc9cd] font-mono">
+            <div className="relative h-full w-full">
+              {timelineTicks.map((time, index) => (
+                <span key={index} className="absolute top-1/2 -translate-y-1/2" style={{ left: `${duration ? (time / duration) * 100 : 0}%`, transform: index === 0 ? "translateY(-50%)" : index === timelineTicks.length - 1 ? "translate(-100%, -50%)" : "translate(-50%, -50%)" }}>
+                  {formatTime(time)}
+                </span>
+              ))}
             </div>
 
             <div className="flex items-center gap-3">
@@ -756,7 +948,7 @@ export default function EditorPage() {
           </div>
 
           <div className="relative flex h-[calc(100%-24px)] items-center gap-2 overflow-x-auto p-2">
-            <div className="pointer-events-none absolute bottom-0 left-[38%] top-0 z-20 flex flex-col items-center">
+            <div className="pointer-events-none absolute bottom-0 top-0 z-20 flex flex-col items-center" style={{ left: `calc(${progressPct}% + 8px)` }}>
               <div className="h-2.5 w-2.5 bg-[#4cd7f6]" style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }} />
               <div className="w-0.5 flex-1 bg-[#4cd7f6]" />
             </div>
@@ -765,7 +957,7 @@ export default function EditorPage() {
               <div
                 key={`${segment.start}-${segment.end}-${index}`}
                 className={`relative h-20 shrink-0 overflow-hidden rounded border p-2 ${segment.kept ? "border-[#3d494c]/30 bg-[#1a202c]" : "border-[#4cd7f6]/40 bg-[#0f172a]"}`}
-                style={{ width: `${Math.max(110, segment.width)}%` }}
+                style={{ width: `${segment.width}%` }}
               >
                 <div className="flex items-center justify-between">
                   <span className="max-w-[80%] truncate text-[11px] font-medium text-[#dde2f3]">{segment.kept ? "Keep" : "Cut"}</span>
@@ -889,7 +1081,7 @@ export default function EditorPage() {
         </div>
       ) : null}
 
-      <input ref={fileInputRef} type="file" accept="video/*" className="hidden" onChange={handleFileSelect} />
+      <input ref={fileInputRef} type="file" accept="video/mp4" className="hidden" onChange={handleFileSelect} />
     </main>
   );
 }

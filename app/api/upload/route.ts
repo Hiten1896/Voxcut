@@ -4,8 +4,8 @@ import { NextResponse } from "next/server";
 
 import { getCurrentUser } from "@/lib/auth";
 import { storage } from "@/lib/storage";
-import { getClientKey, isAllowedVideoUpload, isValidProjectIdentifier, rateLimitAllow } from "@/lib/security";
-import { transcribeVideo } from "@/lib/transcription";
+import { getClientKey, hasMp4FileSignature, isAllowedVideoUpload, isValidProjectIdentifier, rateLimitAllow } from "@/lib/security";
+import { getVideoMetadata } from "@/lib/video-metadata";
 
 export const runtime = "nodejs";
 
@@ -37,22 +37,29 @@ export async function POST(request: Request) {
   if (!validation.ok) {
     return NextResponse.json({ error: validation.reason }, { status: 400 });
   }
+  if (!(await hasMp4FileSignature(file))) {
+    return NextResponse.json({ error: "The selected file is not a valid MP4 video." }, { status: 400 });
+  }
 
   const videoId = randomUUID();
   const assetPaths = storage.getProjectAssetKeys(userId, projectId, videoId);
 
-  await storage.uploadFile(file, userId, projectId, videoId);
-  const transcript = await transcribeVideo(storage.resolveKey(assetPaths.sourceKey), userId, projectId, videoId);
-  await storage.writeJson(assetPaths.transcriptKey, transcript);
-
-  return NextResponse.json({
-    videoId,
-    userId,
-    projectId,
-    name: file.name,
-    sourceKey: assetPaths.sourceKey,
-    sourceUrl: `/api/media?key=${encodeURIComponent(assetPaths.sourceKey)}`,
-    transcript,
-    duration: transcript.duration,
-  });
+  const uploaded = await storage.uploadFile(file, userId, projectId, videoId);
+  try {
+    const metadata = await getVideoMetadata(uploaded.filePath);
+    return NextResponse.json({
+      videoId,
+      userId,
+      projectId,
+      name: file.name,
+      sourceKey: assetPaths.sourceKey,
+      sourceUrl: `/api/media?key=${encodeURIComponent(assetPaths.sourceKey)}`,
+      duration: metadata.duration,
+      metadata,
+    });
+  } catch (error) {
+    await storage.deleteFile(assetPaths.sourceKey).catch(() => undefined);
+    const message = error instanceof Error ? error.message : "Could not read the uploaded video.";
+    return NextResponse.json({ error: message }, { status: 422 });
+  }
 }

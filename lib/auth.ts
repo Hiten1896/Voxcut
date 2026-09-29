@@ -1,4 +1,4 @@
-import { createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
+import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -6,6 +6,7 @@ import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
 
 import { isValidProjectIdentifier } from "@/lib/security";
+import { signSessionToken, verifySessionToken } from "@/lib/session-token";
 
 export const AUTH_COOKIE_NAME = "voxcut_session";
 
@@ -22,16 +23,7 @@ type StoredUser = {
   createdAt: string;
 };
 
-type SessionPayload = {
-  sub: string;
-  email: string;
-  iat: number;
-  exp: number;
-};
-
 const AUTH_USERS_PATH = path.join(process.cwd(), "storage", "auth-users.json");
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
-const SESSION_SECRET = process.env.VOXCUT_SESSION_SECRET ?? "voxcut-local-dev-secret-change-me";
 
 function readAuthStore(): Promise<{ users: StoredUser[] }> {
   return fs
@@ -133,54 +125,11 @@ export async function loginUser(email: string, password: string): Promise<{ ok: 
   };
 }
 
-function base64UrlEncode(value: string | Buffer): string {
-  return Buffer.from(value).toString("base64url");
-}
-
-function base64UrlDecode(value: string): string {
-  return Buffer.from(value, "base64url").toString("utf8");
-}
-
 export function signSession(user: AuthUser): string {
-  const payload: SessionPayload = {
-    sub: user.id,
-    email: user.email,
-    iat: Date.now(),
-    exp: Date.now() + SESSION_TTL_MS,
-  };
-
-  const payloadJson = JSON.stringify(payload);
-  const encodedPayload = base64UrlEncode(payloadJson);
-  const signature = createHmac("sha256", SESSION_SECRET).update(encodedPayload).digest("base64url");
-
-  return `${encodedPayload}.${signature}`;
+  return signSessionToken(user);
 }
 
-export function verifySessionToken(token: string | null): SessionPayload | null {
-  if (!token) {
-    return null;
-  }
-
-  const [encodedPayload, signature] = token.split(".");
-  if (!encodedPayload || !signature) {
-    return null;
-  }
-
-  const expectedSignature = createHmac("sha256", SESSION_SECRET).update(encodedPayload).digest("base64url");
-  if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
-    return null;
-  }
-
-  try {
-    const payload = JSON.parse(base64UrlDecode(encodedPayload)) as SessionPayload;
-    if (!payload.sub || !payload.email || payload.exp < Date.now()) {
-      return null;
-    }
-    return payload;
-  } catch {
-    return null;
-  }
-}
+export { verifySessionToken };
 
 export async function getCurrentUser(request: Request): Promise<AuthUser | null> {
   const cookieHeader = request.headers.get("cookie") ?? "";

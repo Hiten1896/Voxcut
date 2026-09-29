@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
 
 import { resolveExecutable } from "@/lib/ffmpeg-path";
@@ -7,67 +8,24 @@ import type { Transcript, TranscriptSegment, TranscriptWord } from "@/lib/types"
 const execFileAsync = promisify(execFile);
 const ffprobePath = resolveExecutable("ffprobe");
 
-function buildPseudoTranscript(duration: number): TranscriptSegment[] {
-  const safeDuration = Math.max(duration, 8);
-  const segments: TranscriptSegment[] = [
-    { start: 0, end: Math.min(2.8, safeDuration), text: "Hey everyone, welcome back to the studio.", speaker: "Host" },
-    { start: Math.min(2.8, safeDuration), end: Math.min(3.9, safeDuration), text: "[silence]", isSilence: true },
-    { start: Math.min(3.9, safeDuration), end: Math.min(7.4, safeDuration), text: "Today we are reviewing the latest edits and performance updates.", speaker: "Host" },
-    { start: Math.min(7.4, safeDuration), end: Math.min(8.5, safeDuration), text: "[silence]", isSilence: true },
-    { start: Math.min(8.5, safeDuration), end: Math.min(12, safeDuration), text: "This clip is ready for a focused trim and export.", speaker: "Host" },
-  ];
-
-  return segments
-    .map((segment) => ({
-      ...segment,
-      start: Number(segment.start.toFixed(2)),
-      end: Number(segment.end.toFixed(2)),
-    }))
-    .filter((segment) => segment.end > segment.start && segment.start < safeDuration);
-}
-
-function buildWordMap(segments: TranscriptSegment[]): TranscriptWord[] {
-  const words: TranscriptWord[] = [];
-
-  for (const segment of segments) {
-    if (segment.isSilence) continue;
-
-    const tokens = segment.text
-      .replace(/[.,!?]/g, "")
-      .split(/\s+/)
-      .filter(Boolean);
-
-    if (tokens.length === 0) continue;
-
-    const duration = Math.max(segment.end - segment.start, 0.5);
-    const step = duration / tokens.length;
-
-    tokens.forEach((token, index) => {
-      const wordStart = segment.start + index * step;
-      words.push({
-        text: token,
-        start: Number(wordStart.toFixed(3)),
-        end: Number((wordStart + step).toFixed(3)),
-      });
-    });
-  }
-
-  return words;
-}
-
 export async function getVideoDuration(filePath: string): Promise<number> {
-  const { stdout } = await execFileAsync(ffprobePath, [
-    "-v",
-    "error",
-    "-show_entries",
-    "format=duration",
-    "-of",
-    "default=nokey=1:noprint_wrappers=1",
-    filePath,
-  ]);
+  try {
+    const { stdout } = await execFileAsync(ffprobePath, [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration",
+      "-of",
+      "default=nokey=1:noprint_wrappers=1",
+      filePath,
+    ]);
 
-  const parsedDuration = Number.parseFloat(stdout.trim());
-  return Number.isFinite(parsedDuration) ? parsedDuration : 12;
+    const parsedDuration = Number.parseFloat(stdout.trim());
+    return Number.isFinite(parsedDuration) ? parsedDuration : 0;
+  } catch (error) {
+    console.error("Failed to probe video duration:", error);
+    return 0;
+  }
 }
 
 export async function transcribeVideo(
@@ -76,16 +34,61 @@ export async function transcribeVideo(
   projectId: string,
   videoId: string,
 ): Promise<Transcript> {
-  const duration = await getVideoDuration(inputPath);
-  const segments = buildPseudoTranscript(duration);
+  const scriptPath = path.join(process.cwd(), "lib", "transcribe.py");
 
-  return {
-    videoId,
-    userId,
-    projectId,
-    duration: Number(duration.toFixed(2)),
-    segments,
-    words: buildWordMap(segments),
-    source: "heuristic",
-  };
+  try {
+    const { stdout } = await execFileAsync("python", [scriptPath, inputPath], {
+      maxBuffer: 1024 * 1024 * 50,
+      timeout: 120_000,
+    });
+
+    // Find the last JSON line in stdout (in case python prints status or logs)
+    const lines = stdout.trim().split("\n");
+    let parsed: { duration: number; segments: TranscriptSegment[]; words: TranscriptWord[]; source: string } | null = null;
+
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (line.startsWith("{") && line.endsWith("}")) {
+        try {
+          parsed = JSON.parse(line);
+          break;
+        } catch {
+          // continue searching backwards
+        }
+      }
+    }
+
+    if (!parsed || !Array.isArray(parsed.segments)) {
+      throw new Error(`Invalid transcription output: ${stdout.slice(0, 300)}`);
+    }
+
+    return {
+      videoId,
+      userId,
+      projectId,
+      duration: parsed.duration,
+      segments: parsed.segments,
+      words: parsed.words || [],
+      source: "whisper",
+    };
+  } catch (error) {
+    console.error("Transcription execution failed, falling back to ffprobe audio segments:", error);
+    const duration = await getVideoDuration(inputPath);
+    return {
+      videoId,
+      userId,
+      projectId,
+      duration: Number(duration.toFixed(2)),
+      segments: [
+        {
+          start: 0,
+          end: Number(duration.toFixed(2)),
+          text: "[audio track]",
+          speaker: "Speaker",
+        },
+      ],
+      words: [],
+      source: "heuristic",
+    };
+  }
 }

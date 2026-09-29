@@ -48,7 +48,7 @@ export async function POST(request: Request) {
   const assetPaths = storage.getProjectAssetKeys(userId, projectId, body.videoId);
 
   const transcript = await storage.readJson<Transcript>(assetPaths.transcriptKey);
-  const rawPlan = generateCutPlanFromPrompt(prompt, transcript);
+  const rawPlan = await generateCutPlanFromPrompt(prompt, transcript);
   const plan = validateCutPlan(rawPlan);
 
   const projectFileKey = `users/${userId}/projects/${projectId}/project-v1.json`;

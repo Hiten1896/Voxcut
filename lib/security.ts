@@ -36,13 +36,15 @@ export function sanitizePrompt(prompt: unknown, maxLength = 2000): string {
   return prompt.trim().slice(0, maxLength);
 }
 
-export function isAllowedVideoUpload(file: File): { ok: boolean; reason?: string } {
+export type VideoUploadCandidate = Pick<File, "name" | "size" | "type">;
+
+export function isAllowedVideoUpload(file: VideoUploadCandidate): { ok: boolean; reason?: string } {
   if (!file) {
     return { ok: false, reason: "A video file is required." };
   }
 
   const fileName = file.name.toLowerCase();
-  const isMp4 = fileName.endsWith(".mp4") || file.type === "video/mp4";
+  const isMp4 = fileName.endsWith(".mp4") && (!file.type || file.type.toLowerCase() === "video/mp4");
 
   if (!isMp4) {
     return { ok: false, reason: "Only MP4 uploads are supported." };
@@ -59,11 +61,16 @@ export function isAllowedVideoUpload(file: File): { ok: boolean; reason?: string
   return { ok: true };
 }
 
+export async function hasMp4FileSignature(file: Pick<Blob, "slice">): Promise<boolean> {
+  const header = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  return header.length >= 8 && String.fromCharCode(...header.subarray(4, 8)) === "ftyp";
+}
+
 export function getClientKey(request: Request): string {
   return request.headers.get("x-forwarded-for") ?? request.headers.get("x-real-ip") ?? "anonymous";
 }
 
-export function rateLimitAllow(key: string): boolean {
+export function rateLimitAllow(key: string, maxRequests = MAX_REQUESTS_PER_MINUTE): boolean {
   const now = Date.now();
   const existing = rateLimitMap.get(key);
 
@@ -77,7 +84,7 @@ export function rateLimitAllow(key: string): boolean {
     return true;
   }
 
-  if (existing.count >= MAX_REQUESTS_PER_MINUTE) {
+  if (existing.count >= maxRequests) {
     return false;
   }
 
