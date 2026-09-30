@@ -20,14 +20,32 @@ function openDatabase(): Promise<IDBDatabase> {
 
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, 1);
+    let settled = false;
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(STORE_NAME)) {
         request.result.createObjectStore(STORE_NAME, { keyPath: "id" });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error("Could not open browser file storage."));
-    request.onblocked = () => reject(new Error("Browser file storage is busy. Close another Voxcut tab and try again."));
+    request.onsuccess = () => {
+      const database = request.result;
+      if (settled) {
+        database.close();
+        return;
+      }
+      settled = true;
+      database.onversionchange = () => database.close();
+      resolve(database);
+    };
+    request.onerror = () => {
+      if (settled) return;
+      settled = true;
+      reject(request.error ?? new Error("Could not open browser file storage."));
+    };
+    request.onblocked = () => {
+      if (settled) return;
+      settled = true;
+      reject(new Error("Browser file storage is busy. Close another Voxcut tab and try again."));
+    };
   });
 }
 
