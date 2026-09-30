@@ -51,5 +51,13 @@
 - The timeline renders ordered kept blocks using the total kept duration, maps clicks to source positions, maps the playhead from source time back into project time, and includes a horizontal zoom control with pixel width scaled from kept seconds.
 - Trimming now uses the segment's project-time position while honoring source neighbors, even after reordering. Adjacent segments can be moved earlier/later, and the ordered EDL remains the persisted/exported source of truth.
 - Evidence: new automated EDL test covers reorder, validation preserving order, cut list equivalence, time mapping, and playback transitions. Full `npm test` passed 25/25; `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed; `npm run lint` passed with only the two existing landing-page image warnings.
+- Additional render-order evidence: the focused FFmpeg suite passed 3/3. A generated red-then-blue source rendered with intervals reversed was decoded and sampled; the first output section was blue and the second red, proving the render command consumes the reordered timeline sequence.
 - UNVERIFIED: actual browser pointer interactions, playback jumps, visual zoom/scroll behavior, and undo/redo across a reordered timeline. Playwright could not be installed: both registry install attempts stalled; offline install reported no matching cached tarball. The required modern-web-guidance CLI also could not be fetched/cached; current React and MDN media references were consulted instead.
 - Next: add/run real Playwright E2E tests when package/browser installation is possible; then implement the requested operation registry and editing operations.
+
+## Live Gemini smoke check
+
+- `.env.local` contains a `GEMINI_API_KEY` entry (its value was not displayed). No repository `sample-video.mp4` or short speech asset was present.
+- A disposable 8-second spoken MP3 was generated locally with FFmpeg's `flite` filter; it was removed after the attempt.
+- The real `requestGeminiTranscription` call was attempted using the environment key, but returned the provider wrapper error `Gemini could not be reached to transcribe this video.` No live transcript was obtained, so a real edit-plan call was not attempted with invented transcript data.
+- Live provider verification is BLOCKED by the runtime's network connectivity to Google; mocked provider tests remain separate and do not count as live verification.
