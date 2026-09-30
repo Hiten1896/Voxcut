@@ -823,10 +823,6 @@ export default function EditorPage() {
       setStatus("Upload a video clip before prompting edits.");
       return;
     }
-    if (!currentTranscript || currentTranscriptionStatus !== "completed") {
-      setStatus("Transcribe this video before asking for an edit plan.");
-      return;
-    }
     if (!prompt.trim()) return;
 
     try {
@@ -1369,7 +1365,7 @@ export default function EditorPage() {
                 <button
                   type="button"
                   onClick={handleGenerate}
-                  disabled={!!pendingPlan || !prompt.trim() || !currentTranscript || currentTranscriptionStatus !== "completed"}
+                  disabled={!!pendingPlan || !prompt.trim()}
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#06b6d4] text-[#0e131f] transition-colors hover:bg-[#5de6ff] disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="Send prompt"
                 >

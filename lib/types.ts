@@ -61,7 +61,7 @@ export interface ProjectFile {
   userId: UserId;
   projectId: ProjectId;
   prompt: string;
-  transcript: Transcript;
+  transcript?: Transcript;
   plan: CutAction[];
   operation?: EditOperation;
   updatedAt: string;

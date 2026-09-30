@@ -174,3 +174,13 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - Focused tests: `transcription preflight rejects a no-audio MP4 before requiring a Gemini key` uses real FFprobe on `tests/fixtures/no-audio-20s.mp4`; `empty completed provider result has a distinct NO_SPEECH classification`; provider-failure test checks quota/key/provider codes, logged diagnostics, and sanitized returned message.
 - Verification: `npx tsc --noEmit` passed; `npm test` passed 29/29 (with permission to launch FFmpeg/FFprobe); `npm run lint` passed with 0 errors and the two existing image warnings; `npm run build` passed; `git diff --check` passed with line-ending normalization warnings only.
 - Next: Phase 1 B2, classify transcript-independent timing prompts and allow them without a transcript. Authenticated API/UI verification remains a human/browser check.
+
+## Phase 1 B2 — Transcript-free timing prompts (2026-09-30)
+
+- Added `createTimingEditPlan`, a narrow deterministic parser for explicit `trim/cut/remove first|last N seconds` and `cut/remove/trim N to M seconds` requests. It uses FFprobe duration, validates bounds, rejects removing the whole video, and returns the same cut-plan shape used by the editor. It does not fabricate a transcript or invoke Gemini.
+- `/api/plan-cut` now probes the actual source duration first, applies exact timing plans without reading a transcript, and only requires a transcript before calling Gemini for other requests. Missing transcript errors now explain that speech must be transcribed before topic/phrase edits. Plans without transcripts can be persisted without an invented transcript field.
+- The editor's send control no longer stays disabled just because a transcript is missing; errors from unsupported or transcript-dependent prompts are returned to the user.
+- Tests: `timing-only trim and range prompts produce exact cuts without transcript input`; `timing prompts for unimplemented speed and pause operations explain the limitation`.
+- This is PARTIAL against requested B2: explicit trims/ranges work in code, but no authenticated route/browser test ran. Speed changes and dead-pause removal are not implemented and are explicitly rejected with an explanation until their actual timeline/render operations are built. Ambiguous prompts do not get guessed.
+- Verification: `npx tsc --noEmit` passed; `npm test` passed 31/31 (FFmpeg integration tests included); `npm run lint` passed with zero errors and two existing image warnings; `npm run build` passed; `git diff --check` passed with Windows line-ending normalization warnings.
+- Next: B3, make all kept timeline intervals visibly filled and removed ranges visibly empty/hatched, with focused rendering/helper coverage.

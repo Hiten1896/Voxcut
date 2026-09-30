@@ -8,6 +8,8 @@ import { getClientKey, isValidProjectIdentifier, rateLimitAllow, sanitizePrompt 
 import { storage } from "@/lib/storage";
 import { generateCutPlanFromPrompt } from "@/lib/llm-cut-planner";
 import { readOwnedTranscript } from "@/lib/transcript-data";
+import { createTimingEditPlan, TimingEditError } from "@/lib/timing-edit-planner";
+import { getVideoMetadata } from "@/lib/video-metadata";
 
 export const runtime = "nodejs";
 
@@ -29,26 +31,41 @@ export async function POST(request: Request) {
   const keys = storage.getProjectAssetKeys(user.id, projectId, videoId);
   try { await fs.access(storage.resolveKey(keys.sourceKey)); }
   catch { return NextResponse.json({ error: "Stored video not found." }, { status: 404 }); }
-  let transcript;
-  try { transcript = await readOwnedTranscript(storage, keys, { userId: user.id, projectId, videoId }); }
-  catch { return NextResponse.json({ error: "A valid transcript for this video is required before planning edits." }, { status: 404 }); }
+
+  let metadata;
+  try { metadata = await getVideoMetadata(storage.resolveKey(keys.sourceKey)); }
+  catch { return NextResponse.json({ error: "Could not read the source video's duration." }, { status: 422 }); }
 
   let plan;
-  try { plan = await generateCutPlanFromPrompt(prompt, transcript, videoId); }
+  try { plan = createTimingEditPlan(prompt, metadata.duration, videoId); }
   catch (error) {
-    const status = Number((error as { status?: number })?.status) || 502;
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create edit plan." }, { status });
+    const status = error instanceof TimingEditError ? error.status : 422;
+    return NextResponse.json({ error: error instanceof Error ? error.message : "This timing edit is not supported." }, { status });
+  }
+
+  let transcript = null;
+  if (!plan) {
+    try { transcript = await readOwnedTranscript(storage, keys, { userId: user.id, projectId, videoId }); }
+    catch { return NextResponse.json({ error: "This edit needs a transcript. Transcribe the video's speech, then try a topic or phrase-based edit." }, { status: 422 }); }
+  }
+
+  if (!plan && transcript) {
+    try { plan = await generateCutPlanFromPrompt(prompt, transcript, videoId); }
+    catch (error) {
+      const status = Number((error as { status?: number })?.status) || 502;
+      return NextResponse.json({ error: error instanceof Error ? error.message : "Could not create edit plan." }, { status });
+    }
   }
 
   const projectFile: ProjectFile = {
-    version: 1, userId: user.id, projectId, prompt, transcript, plan: plan.cuts, operation: plan.operation, updatedAt: new Date().toISOString(),
+    version: 1, userId: user.id, projectId, prompt, ...(transcript ? { transcript } : {}), plan: plan!.cuts, operation: plan!.operation, updatedAt: new Date().toISOString(),
   };
   await storage.writeJson(`users/${user.id}/projects/${projectId}/project-v1.json`, projectFile);
   const log = await createPromptLog({
     userId: user.id, projectId, prompt,
-    transcriptSnippet: transcript.segments.map((segment) => segment.text).slice(0, 4).join(" "),
-    editPlanJson: plan, feedback: null,
+    transcriptSnippet: transcript?.segments.map((segment) => segment.text).slice(0, 4).join(" ") ?? "",
+    editPlanJson: plan!, feedback: null,
   });
-  const durationAfter = Math.max(Number((transcript.duration - plan.cuts.reduce((total, cut) => total + (cut.end - cut.start), 0)).toFixed(2)), 0);
-  return NextResponse.json({ plan, durationBefore: transcript.duration, durationAfter, transcript, promptLogId: log.id });
+  const durationAfter = Math.max(Number((metadata.duration - plan!.cuts.reduce((total, cut) => total + (cut.end - cut.start), 0)).toFixed(2)), 0);
+  return NextResponse.json({ plan, durationBefore: metadata.duration, durationAfter, transcript, promptLogId: log.id });
 }
