@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --experimental-strip-types --test lib/phase1.test.mjs lib/security.test.mjs lib/render.integration.test.mjs"
+    "test": "node --experimental-strip-types --test lib/phase1.test.mjs lib/security.test.mjs lib/render.integration.test.mjs",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "next": "16.3.5",
@@ -17,6 +18,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

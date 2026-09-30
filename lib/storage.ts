@@ -25,7 +25,7 @@ export interface StorageAdapter {
 }
 
 export class LocalStorageAdapter implements StorageAdapter {
-  rootDir = path.join(process.cwd(), "storage");
+  rootDir = path.resolve(process.env.VOXCUT_STORAGE_DIR ?? path.join(process.cwd(), "storage"));
 
   async ensureDir(dirPath: string) {
     await fs.mkdir(dirPath, { recursive: true });

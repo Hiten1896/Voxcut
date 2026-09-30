@@ -23,7 +23,7 @@ type StoredUser = {
   createdAt: string;
 };
 
-const AUTH_USERS_PATH = path.join(process.cwd(), "storage", "auth-users.json");
+const AUTH_USERS_PATH = path.join(path.resolve(process.env.VOXCUT_STORAGE_DIR ?? path.join(process.cwd(), "storage")), "auth-users.json");
 
 function readAuthStore(): Promise<{ users: StoredUser[] }> {
   return fs

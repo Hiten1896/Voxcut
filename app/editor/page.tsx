@@ -9,15 +9,7 @@ import { getTimelineTicks, pixelToTime, timeToPixel } from "@/lib/timeline-scale
 import type { Transcript } from "@/lib/types";
 import { addKeepSegment, cutsFromKeepSegments, getPlaybackBoundary, getSourceCoverage, getTimelineDuration, keepSegmentsFromCuts, moveKeepSegment, sourceTimeAtTimelineTime, splitKeepSegment, timelineTimeAtSourceTime, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
 import type { TranscriptHighlight } from "@/lib/highlight-detection";
-
-type HistoryItem = {
-  id: string;
-  prompt: string;
-  cuts: number;
-  operation: string;
-  cutRanges: Array<{ start: number; end: number; reason?: string }>;
-  feedback: "up" | "down" | null;
-};
+import { ChatPanel, type ChatMessage, type ChatPlan, type TranscriptCapability } from "./components/chat-panel";
 
 type LoadedClip = {
   id: string;
@@ -25,6 +17,7 @@ type LoadedClip = {
   url: string;
   duration: number;
   videoId?: string;
+  hasAudio?: boolean;
 };
 
 type SessionUser = {
@@ -39,6 +32,8 @@ type PendingPlan = {
   operation: string;
   cuts: Array<{ action: "cut"; start: number; end: number; reason?: string }>;
   segments: KeepSegment[];
+  durationBefore: number;
+  durationAfter: number;
 };
 
 export default function EditorPage() {
@@ -49,9 +44,10 @@ export default function EditorPage() {
   const [clips, setClips] = useState<LoadedClip[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isGeneratingPlan, setIsGeneratingPlan] = useState(false);
   const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
   const [status, setStatus] = useState("");
-  const [history, setHistory] = useState<HistoryItem[]>([]);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [editPlan, setEditPlan] = useState<Array<{ action: "cut"; start: number; end: number; reason?: string }>>([]);
   const [editSegments, setEditSegments] = useState<KeepSegment[]>([]);
@@ -98,12 +94,14 @@ export default function EditorPage() {
   const [exportResolution, setExportResolution] = useState("1080p");
   const [exportQuality, setExportQuality] = useState("High");
   const uploadInFlightRef = useRef(false);
+  const appliedPlanIdRef = useRef<string | null>(null);
   const lastVideoStorageKey = authUser ? `voxcut:last-video:${authUser.id}` : null;
   const [authLoading, setAuthLoading] = useState(true);
   const [transcript, setTranscript] = useState<Transcript | null>(null);
   const [transcriptionVideoId, setTranscriptionVideoId] = useState<string | null>(null);
   const [transcriptionStatus, setTranscriptionStatus] = useState<"not_started" | "transcribing" | "completed" | "failed">("not_started");
   const [transcriptionError, setTranscriptionError] = useState("");
+  const [transcriptionErrorCode, setTranscriptionErrorCode] = useState<string | undefined>();
   const [captionStatus, setCaptionStatus] = useState("");
   const [highlights, setHighlights] = useState<TranscriptHighlight[]>([]);
   const [highlightStatus, setHighlightStatus] = useState("");
@@ -185,8 +183,10 @@ export default function EditorPage() {
     }
     setAuthUser(null);
     setStatus("");
+    setChatMessages([]);
+    setPendingPlan(null);
+    setPrompt("");
     setProjectName("untitled project");
-    setHistory([]);
     setClips([]);
     setSelectedClipId(null);
     setOutputUrl(null);
@@ -213,11 +213,33 @@ export default function EditorPage() {
   const timelineCurrentTime = timelineTimeAtSourceTime(timelineSegments, currentTime);
   const timelinePixelWidth = Math.max(timelineViewportWidth, timelineDuration * 60 * timelineZoom);
   const activeProjectId = useMemo(() => (authUser ? `project-${authUser.id.slice(0, 8)}` : "default-project"), [authUser]);
-  const historyCountLabel = history.length === 1 ? "1 edit" : `${history.length} edits`;
   const timelineTicks = useMemo(() => getTimelineTicks(timelineDuration, timelineDuration ? timelinePixelWidth / timelineDuration : 0), [timelineDuration, timelinePixelWidth]);
   const currentTranscript = selectedClip?.videoId === transcriptionVideoId ? transcript : null;
   const currentTranscriptionStatus = selectedClip?.videoId === transcriptionVideoId ? transcriptionStatus : "not_started";
   const currentTranscriptionError = selectedClip?.videoId === transcriptionVideoId ? transcriptionError : "";
+  const currentTranscriptionErrorCode = selectedClip?.videoId === transcriptionVideoId ? transcriptionErrorCode : undefined;
+  const hasTranscript = Boolean(currentTranscript && (currentTranscript.words.length > 0 || currentTranscript.segments.length > 0));
+  const transcriptCapability: TranscriptCapability = currentTranscriptionStatus === "transcribing" ? "transcribing"
+    : currentTranscriptionErrorCode === "NO_AUDIO_TRACK" || selectedClip?.hasAudio === false ? "no-audio"
+      : currentTranscriptionErrorCode === "NO_SPEECH" || (currentTranscript !== null && !hasTranscript) ? "no-speech"
+        : hasTranscript ? "ready"
+          : currentTranscriptionStatus === "failed" || Boolean(currentTranscriptionError) ? "failed" : "not-started";
+  const transcriptNote = transcriptCapability === "no-audio"
+    ? "This video has no sound, so transcript edits are unavailable. Timing edits still work."
+    : transcriptCapability === "no-speech"
+      ? "No speech was detected, so transcript edits are unavailable. Timing edits still work."
+      : transcriptCapability === "transcribing"
+        ? "Transcription is running. Timing edits still work while speech is processed."
+        : transcriptCapability === "failed"
+          ? "Transcription failed. Retry it or use the available timing edits."
+          : transcriptCapability === "ready"
+            ? "Transcript is ready. Use transcript context or the tested timing edits below."
+            : selectedClip
+              ? "Timing edits work now. Transcribe this video to enable transcript-based planning."
+              : "Upload a video to enable timing and transcript-based edits.";
+  const promptSuggestions = hasTranscript
+    ? ["Cut from 2 to 5 seconds", "Trim first 5 seconds", "Cut last 2 seconds"]
+    : ["Trim first 5 seconds", "Cut last 2 seconds", "Cut from 2 to 5 seconds"];
   const timelineStorageKey = authUser && selectedClip?.videoId ? `voxcut:timeline:${authUser.id}:${selectedClip.videoId}` : null;
   const activeTranscriptIndex = currentTranscript?.segments.findIndex(
     (segment) => currentTime >= segment.start && currentTime <= segment.end,
@@ -244,9 +266,17 @@ export default function EditorPage() {
     });
   }, [duration, timelineDuration, timelineSegments]);
 
+  const invalidatePlanUndo = () => {
+    appliedPlanIdRef.current = null;
+    setChatMessages((messages) => messages.map((message) => message.type === "plan" && message.plan.state === "applied"
+      ? { ...message, plan: { ...message.plan, canUndo: false } }
+      : message));
+  };
+
   const commitTimeline = (next: KeepSegment[]) => {
     if (exportState === "rendering") { setStatus("Wait for the current render to finish before changing the timeline."); return; }
     if (next.length === 0) { setStatus("Keep at least one video segment. Use Restore at the playhead to bring removed footage back."); return; }
+    invalidatePlanUndo();
     setTimelineUndo((history) => [...history.slice(-49), editSegments]);
     setTimelineRedo([]);
     setEditSegments(next);
@@ -311,6 +341,7 @@ export default function EditorPage() {
       setEditSegments(drag.initial);
       setEditPlan(cutsFromKeepSegments(drag.initial, duration));
     } else if (JSON.stringify(drag.latest) !== JSON.stringify(drag.initial)) {
+      invalidatePlanUndo();
       setTimelineUndo((history) => [...history.slice(-49), drag.initial]);
       setTimelineRedo([]);
       if (timelineStorageKey) {
@@ -354,6 +385,7 @@ export default function EditorPage() {
     if (exportState === "rendering") return;
     const previous = timelineUndo[timelineUndo.length - 1];
     if (!previous) return;
+    invalidatePlanUndo();
     setTimelineRedo((history) => [...history, editSegments]);
     setTimelineUndo((history) => history.slice(0, -1));
     setEditSegments(previous);
@@ -367,6 +399,7 @@ export default function EditorPage() {
     if (exportState === "rendering") return;
     const next = timelineRedo[timelineRedo.length - 1];
     if (!next) return;
+    invalidatePlanUndo();
     setTimelineUndo((history) => [...history, editSegments]);
     setTimelineRedo((history) => history.slice(0, -1));
     setEditSegments(next);
@@ -474,6 +507,7 @@ export default function EditorPage() {
         setTranscriptionStatus(payload.status?.status ?? "not_started");
         setTranscript(payload.transcript ?? null);
         setTranscriptionError(payload.status?.error ?? "");
+        setTranscriptionErrorCode(payload.status?.errorCode);
         if (payload.status?.status === "transcribing") timer = setTimeout(loadTranscript, 1500);
       } catch (error: unknown) {
         if (!cancelled) {
@@ -486,37 +520,12 @@ export default function EditorPage() {
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [activeProjectId, authUser, selectedClip?.videoId, transcriptionStatus]);
 
-  useEffect(() => {
-    if (!authUser) return;
-    let cancelled = false;
-    void fetch(`/api/prompt-logs?projectId=${encodeURIComponent(activeProjectId)}`, { cache: "no-store" })
-      .then(async (response) => {
-        const payload = await response.json();
-        if (!response.ok || !Array.isArray(payload.logs)) return;
-        const saved: HistoryItem[] = payload.logs.flatMap((log: Record<string, unknown>) => {
-          if (typeof log.id !== "string" || typeof log.prompt !== "string") return [];
-          const plan = log.editPlanJson && typeof log.editPlanJson === "object" ? log.editPlanJson as Record<string, unknown> : {};
-          const cuts = Array.isArray(plan.cuts) ? plan.cuts : Array.isArray(log.editPlanJson) ? log.editPlanJson : [];
-          return [{
-            id: log.id,
-            prompt: log.prompt,
-            cuts: cuts.length,
-            operation: typeof plan.operation === "string" ? plan.operation : "edit",
-            cutRanges: cuts.filter((cut): cut is { start: number; end: number; reason?: string } => Boolean(cut) && typeof cut === "object" && Number.isFinite((cut as { start?: unknown }).start) && Number.isFinite((cut as { end?: unknown }).end)),
-            feedback: log.feedback === "up" || log.feedback === "down" ? log.feedback : null,
-          }];
-        });
-        if (!cancelled) setHistory((current) => [...current.filter((entry) => !saved.some((item) => item.id === entry.id)), ...saved]);
-      })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [activeProjectId, authUser]);
-
   const handleTranscribe = async () => {
     if (!selectedClip?.videoId) return;
     setTranscriptionVideoId(selectedClip.videoId);
     setTranscriptionStatus("transcribing");
     setTranscriptionError("");
+    setTranscriptionErrorCode(undefined);
     setTranscript(null);
     try {
       const response = await fetch("/api/transcription", {
@@ -525,7 +534,10 @@ export default function EditorPage() {
         body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId }),
       });
       const payload = await response.json();
-      if (!response.ok && response.status !== 409) throw new Error(payload.error ?? "Could not start transcription.");
+      if (!response.ok && response.status !== 409) {
+        setTranscriptionErrorCode(typeof payload.code === "string" ? payload.code : undefined);
+        throw new Error(payload.error ?? "Could not start transcription.");
+      }
       setTranscriptionStatus(payload.status?.status ?? "transcribing");
     } catch (error) {
       setTranscriptionStatus("failed");
@@ -611,6 +623,7 @@ export default function EditorPage() {
           name: reference.name,
           url: reference.sourceUrl,
           duration: reference.duration,
+          hasAudio: reference.hasAudio,
         };
         setClips((previous) => previous.length ? previous : [clip]);
         setSelectedClipId((previous) => previous ?? clip.id);
@@ -649,6 +662,7 @@ export default function EditorPage() {
         projectId?: string;
         sourceUrl?: string;
         duration?: number;
+        metadata?: { hasAudio?: boolean };
       };
       if (!response.ok) throw new Error(payload.error ?? (response.status === 401 ? "Your session expired. Sign in again to upload this video." : `Upload failed (${response.status}).`));
       if (!payload.videoId || payload.userId !== authUser.id || payload.projectId !== activeProjectId) {
@@ -678,6 +692,7 @@ export default function EditorPage() {
         name: file.name,
         url: `${mediaUrl.pathname}${mediaUrl.search}`,
         duration: actualDuration,
+        hasAudio: payload.metadata?.hasAudio,
       };
       let restoreWarning = false;
       try {
@@ -687,11 +702,15 @@ export default function EditorPage() {
           name: clip.name,
           sourceUrl: clip.url,
           duration: clip.duration,
+          ...(typeof clip.hasAudio === "boolean" ? { hasAudio: clip.hasAudio } : {}),
         }));
       } catch {
         restoreWarning = true;
       }
       setClips((previous) => [...previous, clip]);
+      setChatMessages([]);
+      setPendingPlan(null);
+      setPrompt("");
       setSelectedClipId(clip.id);
       setProjectName(file.name.replace(/\.mp4$/i, ""));
       setOutputUrl(null);
@@ -833,32 +852,22 @@ export default function EditorPage() {
     }
   };
 
-  const handleGenerate = async () => {
-    if (pendingPlan) {
-      setStatus("Apply or cancel the current edit plan before requesting another one.");
-      return;
-    }
-    if (!authUser) {
-      setStatus("Please sign in before creating an edit plan.");
-      return;
-    }
-
-    if (!selectedClip || !selectedClip.videoId) {
-      setStatus("Upload a video clip before prompting edits.");
-      return;
-    }
-    if (!prompt.trim()) return;
-
+  const handleGenerate = async (submittedPrompt = prompt, retryId?: string) => {
+    const trimmedPrompt = submittedPrompt.trim();
+    if (!trimmedPrompt || isGeneratingPlan || pendingPlan || !authUser || !selectedClip?.videoId) return;
+    const requestId = retryId ?? `chat-${crypto.randomUUID()}`;
+    setStatus("");
+    setIsGeneratingPlan(true);
+    setChatMessages((messages) => [
+      ...messages.filter((message) => message.id !== requestId),
+      ...(retryId ? [] : [{ id: `user-${requestId}`, type: "user" as const, text: trimmedPrompt }]),
+      { id: requestId, type: "loading" as const },
+    ]);
     try {
-      setStatus("Generating edit plan...");
       const response = await fetch("/api/plan-cut", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          videoId: selectedClip.videoId,
-          projectId: activeProjectId,
-          prompt: prompt.trim(),
-        }),
+        body: JSON.stringify({ videoId: selectedClip.videoId, projectId: activeProjectId, prompt: trimmedPrompt }),
       });
 
       const payload = await response.json();
@@ -872,18 +881,38 @@ export default function EditorPage() {
       if (nextPlan.some((cut) => !cut || cut.action !== "cut" || !Number.isFinite(cut.start) || !Number.isFinite(cut.end) || cut.start < 0 || cut.end <= cut.start || cut.end > duration)) {
         throw new Error("The planner returned cut ranges outside this video.");
       }
-      const trimmedPrompt = prompt.trim();
-      const proposedSegments = keepSegmentsFromCuts(nextPlan, duration);
       if (typeof payload.promptLogId !== "string") throw new Error("The edit plan was created, but its history record could not be saved.");
-      setPendingPlan({ id: payload.promptLogId, videoId: selectedClip.videoId, prompt: trimmedPrompt, operation: planResult.operation!, cuts: nextPlan, segments: proposedSegments });
-      setStatus("");
+      const proposedSegments = keepSegmentsFromCuts(nextPlan, duration);
+      const durationBefore = Number.isFinite(payload.durationBefore) && payload.durationBefore > 0 ? payload.durationBefore : duration;
+      const durationAfter = getTimelineDuration(proposedSegments);
+      const pending: PendingPlan = { id: payload.promptLogId, videoId: selectedClip.videoId, prompt: trimmedPrompt, operation: planResult.operation!, cuts: nextPlan, segments: proposedSegments, durationBefore, durationAfter };
+      const card: ChatPlan = {
+        id: pending.id,
+        operation: pending.operation,
+        summary: nextPlan.length ? `Remove ${nextPlan.length} source range${nextPlan.length === 1 ? "" : "s"}` : "Keep all source footage",
+        durationBefore,
+        durationAfter,
+        cuts: nextPlan,
+        state: "pending",
+        canUndo: false,
+      };
+      setPendingPlan(pending);
+      setChatMessages((messages) => [...messages.filter((message) => message.id !== requestId), { id: requestId, type: "plan", plan: card }]);
+      setPrompt("");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Prompt failed.");
+      setChatMessages((messages) => [...messages.filter((message) => message.id !== requestId), {
+        id: requestId,
+        type: "error",
+        prompt: trimmedPrompt,
+        message: error instanceof Error ? error.message : "The edit request failed.",
+      }]);
+    } finally {
+      setIsGeneratingPlan(false);
     }
   };
 
-  const applyPendingPlan = () => {
-    if (!pendingPlan) return;
+  const applyPendingPlan = (planId: string) => {
+    if (!pendingPlan || pendingPlan.id !== planId) return;
     if (pendingPlan.videoId !== selectedClip?.videoId) {
       setPendingPlan(null);
       setStatus("This plan belongs to a different video and was not applied.");
@@ -894,35 +923,32 @@ export default function EditorPage() {
       return;
     }
     commitTimeline(pendingPlan.segments);
+    appliedPlanIdRef.current = pendingPlan.id;
+    setChatMessages((messages) => messages.map((message) => message.type === "plan" && message.plan.id === pendingPlan.id
+      ? { ...message, plan: { ...message.plan, state: "applied", canUndo: true } }
+      : message));
     setSelectedEditSegmentId(pendingPlan.segments[0]?.id ?? null);
     setCurrentTime(pendingPlan.segments[0]?.start ?? 0);
-    setHistory((previous) => [
-      { id: pendingPlan.id, prompt: pendingPlan.prompt, cuts: pendingPlan.cuts.length, operation: pendingPlan.operation, cutRanges: pendingPlan.cuts, feedback: null },
-      ...previous,
-    ]);
     setPrompt("");
     setPendingPlan(null);
-    setStatus("The reviewed edit plan was applied. Use Undo to restore the previous timeline.");
+    setStatus("");
   };
 
-  const cancelPendingPlan = () => {
+  const cancelPendingPlan = (planId: string) => {
+    if (!pendingPlan || pendingPlan.id !== planId) return;
     setPendingPlan(null);
-    setStatus("Edit plan canceled. The timeline was not changed.");
+    setChatMessages((messages) => messages.map((message) => message.type === "plan" && message.plan.id === planId
+      ? { ...message, plan: { ...message.plan, state: "discarded" } }
+      : message));
+    setStatus("");
   };
 
-  const handleFeedback = async (id: string, feedback: "up" | "down") => {
-    try {
-      const response = await fetch(`/api/prompt-logs/${encodeURIComponent(id)}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ feedback }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error ?? "Could not save feedback.");
-      setHistory((previous) => previous.map((entry) => (entry.id === id ? { ...entry, feedback } : entry)));
-    } catch (error) { setStatus(error instanceof Error ? error.message : "Could not save feedback."); }
-  };
-
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") handleGenerate();
+  const undoAppliedPlan = (planId: string) => {
+    if (appliedPlanIdRef.current !== planId || !timelineUndo.length) return;
+    undoTimeline();
+    setChatMessages((messages) => messages.map((message) => message.type === "plan" && message.plan.id === planId
+      ? { ...message, plan: { ...message.plan, state: "undone", canUndo: false } }
+      : message));
   };
 
   const togglePlayback = async () => {
@@ -1304,134 +1330,37 @@ export default function EditorPage() {
             </div>
           </div>
 
-          <aside className="flex w-96 shrink-0 flex-col border-l border-[#3d494c]/30 bg-[#1a202c]">
-            <div className="flex h-11 items-center justify-between border-b border-[#3d494c]/30 bg-[#161c28] px-4">
-              <div className="flex items-center gap-2">
-                <span className="text-[16px] font-medium text-[#dde2f3]">Prompt history</span>
-                <span className="rounded border border-[#3d494c]/30 bg-[#242a36] px-1.5 py-0.5 text-[10px] text-[#4cd7f6]">
-                  {historyCountLabel}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-3">
-              <section aria-label="Video transcript" className="mb-3 rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-3">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <h2 className="text-[12px] font-medium uppercase tracking-[0.12em] text-[#4cd7f6]">Transcript</h2>
-                  <div className="flex gap-1">
-                    {selectedClip?.videoId && currentTranscriptionStatus !== "transcribing" && currentTranscriptionStatus !== "completed" ? (
-                      <button type="button" onClick={handleTranscribe} className="rounded border border-[#4cd7f6]/30 px-2 py-1 text-[11px] text-[#4cd7f6] hover:bg-[#4cd7f6]/10">
-                        {currentTranscriptionStatus === "failed" ? "Retry" : "Transcribe"}
-                      </button>
-                    ) : null}
-                    {currentTranscript ? <button type="button" onClick={findHighlights} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#bcc9cd]">Highlights</button> : null}
-                    {currentTranscript ? <button type="button" onClick={() => void downloadCaptions("srt")} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#bcc9cd]">SRT</button> : null}
-                    {currentTranscript ? <button type="button" onClick={() => void downloadCaptions("vtt")} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#bcc9cd]">VTT</button> : null}
-                  </div>
-                </div>
-                {!selectedClip?.videoId ? <p className="text-[12px] text-[#869397]">Upload a video to transcribe its speech.</p> : null}
-                {currentTranscriptionStatus === "transcribing" ? <p role="status" className="text-[12px] text-[#bcc9cd]">Transcribing the uploaded video…</p> : null}
-                {currentTranscriptionError ? <p role="alert" className="mb-2 text-[12px] text-[#ffb4ab]">{currentTranscriptionError}</p> : null}
-                {captionStatus ? <p role="status" className="mb-2 text-[11px] text-[#bcc9cd]">{captionStatus}</p> : null}
-                {currentTranscript && currentTranscript.segments.length === 0 ? <p className="text-[12px] text-[#bcc9cd]">No speech was detected in this video.</p> : null}
-                {currentTranscript?.text ? <p className="mb-2 text-[12px] leading-5 text-[#dde2f3]">{currentTranscript.text}</p> : null}
-                {currentTranscript?.segments.map((segment, index) => (
-                  <button
-                    key={`${segment.start}-${index}`}
-                    type="button"
-                    data-active-transcript={index === activeTranscriptIndex ? "true" : "false"}
-                    aria-current={index === activeTranscriptIndex ? "time" : undefined}
-                    onClick={() => handleScrub(segment.start)}
-                    className={`block w-full border-t border-[#3d494c]/20 py-2 text-left text-[12px] ${index === activeTranscriptIndex ? "bg-[#4cd7f6]/10 text-[#4cd7f6]" : "text-[#dde2f3]"}`}
-                  >
-                    <span className="mr-2 font-mono text-[#869397]">{formatTime(segment.start)}–{formatTime(segment.end)}</span>{segment.text}
-                  </button>
-                ))}
-                {highlightStatus ? <p role="status" className="mt-2 text-[11px] text-[#bcc9cd]">{highlightStatus}</p> : null}
-                {highlights.map((highlight) => (
-                  <div key={highlight.id} className="mt-2 rounded border border-[#3d494c]/30 p-2 text-[11px]">
-                    <button type="button" onClick={() => handleScrub(highlight.start)} className="block text-left text-[#dde2f3]">
-                      <span className="mr-2 font-mono text-[#4cd7f6]">{formatTime(highlight.start)}–{formatTime(highlight.end)}</span>{highlight.text}
-                    </button>
-                    <p className="mt-1 text-[#869397]">{highlight.reason}</p>
-                    <button type="button" onClick={() => applyHighlight(highlight)} className="mt-1 text-[#4cd7f6]">Keep this highlight</button>
-                  </div>
-                ))}
-              </section>
-              {pendingPlan ? (
-                <section aria-label="Edit plan preview" className="mb-3 rounded-lg border border-[#4cd7f6]/35 bg-[#161c28] p-3">
-                  <h2 className="text-[12px] font-medium uppercase tracking-[0.12em] text-[#4cd7f6]">Review edit plan · {pendingPlan.operation}</h2>
-                  <p className="mt-1 text-[12px] text-[#bcc9cd]">{pendingPlan.cuts.length ? `Remove ${pendingPlan.cuts.length} source range${pendingPlan.cuts.length === 1 ? "" : "s"}.` : "This plan keeps all current source footage."} The timeline will change only after you apply it.</p>
-                  {pendingPlan.cuts.length ? <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto">{pendingPlan.cuts.map((cut, index) => <li key={`${cut.start}-${index}`} className="text-[11px] text-[#dde2f3]">{formatTime(cut.start)}–{formatTime(cut.end)}{cut.reason ? ` · ${cut.reason}` : ""}</li>)}</ul> : null}
-                  <div className="mt-3 flex gap-2">
-                    <button type="button" onClick={cancelPendingPlan} className="rounded border border-[#3d494c]/50 px-3 py-1.5 text-[11px] text-[#bcc9cd]">Cancel</button>
-                    <button type="button" onClick={applyPendingPlan} disabled={exportState === "rendering"} className="rounded bg-[#06b6d4] px-3 py-1.5 text-[11px] font-medium text-[#0e131f] disabled:opacity-50">Apply plan</button>
-                  </div>
-                </section>
-              ) : null}
-              <div className="flex flex-col gap-2.5">
-                {history.length > 0 ? history.map((entry) => (
-                  <div key={entry.id} className="flex flex-col gap-2 rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-3">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="text-[13px] leading-snug text-[#dde2f3]">{entry.prompt}</p>
-                      <div className="flex shrink-0 items-center gap-1 text-[#bcc9cd]">
-                        <button type="button" onClick={() => void handleFeedback(entry.id, "up")} className="p-0.5 transition-colors hover:text-[#4cd7f6]" aria-label="Helpful prompt">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5">
-                            <path d="M7 10v9m0 0H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3m0 0 4.5-7.8A1.4 1.4 0 0 1 16.7 3c1 0 1.8.8 1.8 1.8 0 .3-.1.7-.2.9L16 10h4.8a2 2 0 0 1 2 2.3l-1 6a2 2 0 0 1-2 1.7H7Z" />
-                          </svg>
-                        </button>
-                        <button type="button" onClick={() => void handleFeedback(entry.id, "down")} className="p-0.5 transition-colors hover:text-[#ffb4ab]" aria-label="Unhelpful prompt">
-                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-3.5 w-3.5">
-                            <path d="M17 14V5m0 0h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1h-3m0 0-4.5 7.8A1.4 1.4 0 0 1 7.3 21c-1 0-1.8-.8-1.8-1.8 0-.3.1-.7.2-.9L8 14H3.2a2 2 0 0 1-2-2.3l1-6a2 2 0 0 1 2-1.7H17Z" />
-                          </svg>
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="inline-flex w-fit items-center gap-1.5 rounded border border-[#06b6d4]/30 bg-[#0e131f] px-2 py-0.5 text-[10px] text-[#4cd7f6]">
-                      <span className="h-1.5 w-1.5 rounded-full bg-[#06b6d4]" />
-                      <span>{entry.operation} · {entry.cuts} cut{entry.cuts === 1 ? "" : "s"}{entry.feedback ? ` · ${entry.feedback === "up" ? "Helpful" : "Needs work"}` : ""}</span>
-                    </div>
-                    {entry.cutRanges.map((cut, index) => <button key={`${cut.start}-${index}`} type="button" onClick={() => handleScrub(cut.start)} className="text-left text-[10px] text-[#869397]">Cut {formatTime(cut.start)}–{formatTime(cut.end)}{cut.reason ? ` · ${cut.reason}` : ""}</button>)}
-                  </div>
-                )) : (
-                  <div className="rounded-lg border border-dashed border-[#3d494c]/30 bg-[#0e131f] p-4 text-left">
-                    <div className="mb-2 text-[12px] font-medium uppercase tracking-[0.14em] text-[#4cd7f6]">No edits yet</div>
-                    <p className="text-[13px] leading-6 text-[#bcc9cd]">Upload a video and describe the cut you want. Your prompt history and generated edit plan will appear here.</p>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="border-t border-[#3d494c]/30 bg-[#0e131f] p-3">
-              <div className="flex items-center gap-2 rounded-lg border border-[#3d494c]/30 bg-[#161c28] px-2.5 py-1.5 focus-within:border-[#4cd7f6]">
-                <input
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  onKeyDown={handleKeyDown}
-                  disabled={!!pendingPlan}
-                  placeholder="Describe the edit you want..."
-                  className="w-full border-0 bg-transparent p-0 text-[13px] text-[#dde2f3] placeholder:text-[#869397] focus:ring-0"
-                />
-                <button
-                  type="button"
-                  onClick={handleGenerate}
-                  disabled={!!pendingPlan || !prompt.trim()}
-                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#06b6d4] text-[#0e131f] transition-colors hover:bg-[#5de6ff] disabled:cursor-not-allowed disabled:opacity-40"
-                  aria-label="Send prompt"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4">
-                    <path d="M5 12h14M13 5l7 7-7 7" />
-                  </svg>
-                </button>
-              </div>
-
-              <div className="mt-2 flex items-center justify-between px-1 text-[11px] text-[#bcc9cd]">
-                <span>Press Enter to generate</span>
-                <span className="font-mono text-[#869397]">Cut planning service</span>
-              </div>
-            </div>
-          </aside>
+          <ChatPanel
+            capability={transcriptCapability}
+            note={transcriptNote}
+            onRetryTranscription={selectedClip?.videoId && selectedClip.hasAudio !== false ? () => void handleTranscribe() : undefined}
+            hasVideo={!!selectedClip?.videoId}
+            transcript={currentTranscript}
+            activeTranscriptIndex={activeTranscriptIndex}
+            transcriptionError={currentTranscriptionError}
+            captionStatus={captionStatus}
+            onDownloadCaptions={(format) => void downloadCaptions(format)}
+            highlights={highlights}
+            highlightStatus={highlightStatus}
+            onFindHighlights={() => void findHighlights()}
+            onKeepHighlight={applyHighlight}
+            messages={chatMessages}
+            suggestions={promptSuggestions}
+            composerValue={prompt}
+            onComposerChange={setPrompt}
+            onSend={() => void handleGenerate(prompt)}
+            blockedReason={!authUser ? "Sign in before sending a prompt." : !selectedClip?.videoId ? "Upload a video before sending a prompt." : ""}
+            sending={isGeneratingPlan}
+            locked={!!pendingPlan}
+            onRetryMessage={(id) => {
+              const failed = chatMessages.find((message) => message.id === id && message.type === "error");
+              if (failed?.type === "error") void handleGenerate(failed.prompt, failed.id);
+            }}
+            onSeek={handleScrub}
+            onApplyPlan={applyPendingPlan}
+            onDiscardPlan={cancelPendingPlan}
+            onUndoPlan={undoAppliedPlan}
+          />
         </div>
 
         <footer className="relative h-32 shrink-0 border-t border-[#3d494c]/30 bg-[#161c28]">
