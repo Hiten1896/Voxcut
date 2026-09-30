@@ -109,6 +109,15 @@ export default function EditorPage() {
   const [highlightStatus, setHighlightStatus] = useState("");
 
   useEffect(() => {
+    if (!status || isUploading || status === "Generating edit plan...") return;
+    const message = status;
+    const timeout = window.setTimeout(() => {
+      setStatus((current) => current === message ? "" : current);
+    }, 3000);
+    return () => window.clearTimeout(timeout);
+  }, [isUploading, status]);
+
+  useEffect(() => {
     const fetchSession = async () => {
       try {
         const response = await fetch("/api/auth/me", { cache: "no-store" });
@@ -175,6 +184,7 @@ export default function EditorPage() {
       try { localStorage.removeItem(`voxcut:last-video:${authUser.id}`); } catch { /* local storage may be unavailable */ }
     }
     setAuthUser(null);
+    setStatus("");
     setProjectName("untitled project");
     setHistory([]);
     setClips([]);
@@ -1115,7 +1125,11 @@ export default function EditorPage() {
                       controlsList="nodownload noremoteplayback"
                       disablePictureInPicture
                       onContextMenu={(e) => e.preventDefault()}
-                      onLoadStart={() => setMediaReady(false)}
+                      onLoadStart={() => {
+                        setMediaReady(false);
+                        setIsPlaying(false);
+                        setStatus("");
+                      }}
                       onTimeUpdate={(e) => {
                         const time = e.currentTarget.currentTime;
                         if (!Number.isFinite(time)) return;

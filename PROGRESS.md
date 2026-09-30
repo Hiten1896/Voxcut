@@ -224,3 +224,9 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - Added shared pixel/time conversion helpers and adaptive “nice” tick intervals that maintain at least 80px between labels (except a final endpoint label, which is shown only when it fits). Pointer seeking and trim drags now convert against that same axis.
 - Verification: `npx tsc --noEmit` passed; `npm test` passed 38/38; `npm run lint` passed with 0 errors and two existing landing-page image warnings; `npm run build` passed; `git diff --check` passed (line-ending notices only). Visual alignment and scrolling remain unverified in a real browser.
 - Next: B8, make status notifications dismiss after a short period and clear stale notifications when the project/media changes.
+
+## Phase 1 B8 — Self-dismissing status notifications (2026-09-30)
+
+- Status notifications now dismiss after three seconds; a newer message replaces the old one, and the timer is canceled while an upload or edit-plan request is still in progress. Sign-out and new video loads clear stale status immediately. Upload failures still expose the existing retry action while visible.
+- Verification: `npx tsc --noEmit` passed; `npm test` passed 38/38; `npm run lint` passed with 0 errors and two existing landing-page image warnings; `npm run build` passed; `git diff --check` passed (line-ending notice only). Notification timing was not visually verified in a browser.
+- B8 is implemented. B9 is implemented in its preceding commit. Real browser checks for fullscreen controls and status timing remain outstanding; no Phase 2 functionality was added in this work.
