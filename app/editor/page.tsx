@@ -78,6 +78,9 @@ export default function EditorPage() {
   } | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isExportPreviewPlaying, setIsExportPreviewPlaying] = useState(false);
+  const [exportPreviewTime, setExportPreviewTime] = useState(0);
+  const [exportPreviewDuration, setExportPreviewDuration] = useState(0);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [mediaReady, setMediaReady] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -85,6 +88,8 @@ export default function EditorPage() {
   const [isUploading, setIsUploading] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playerWrapperRef = useRef<HTMLDivElement | null>(null);
+  const exportVideoRef = useRef<HTMLVideoElement | null>(null);
   const [authUser, setAuthUser] = useState<SessionUser | null>(null);
   const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authForm, setAuthForm] = useState({ email: "", password: "" });
@@ -931,6 +936,28 @@ export default function EditorPage() {
     setIsPlaying(false);
   };
 
+  const requestPlayerFullscreen = async () => {
+    const player = playerWrapperRef.current;
+    if (!player) return;
+    try {
+      if (document.fullscreenElement === player) await document.exitFullscreen();
+      else await player.requestFullscreen();
+    } catch {
+      setStatus("Fullscreen mode could not start in this browser.");
+    }
+  };
+
+  const toggleExportPreview = async () => {
+    const video = exportVideoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      try { await video.play(); }
+      catch { setExportError("The export preview could not start. Try again."); }
+    } else {
+      video.pause();
+    }
+  };
+
   const handleScrub = (nextTime: number) => {
     const video = videoRef.current;
     if (!video) return;
@@ -1067,9 +1094,9 @@ export default function EditorPage() {
       <main className="ml-14 mt-14 flex h-[calc(100vh-56px)] flex-col overflow-hidden bg-[#0e131f]">
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <section className="relative min-w-0 flex-1 overflow-hidden bg-[#030712]">
-            <div className="flex h-full flex-col">
-              <div className="flex flex-1 items-center justify-center p-4">
-                <div className="relative aspect-video w-full max-w-4xl overflow-hidden rounded border border-[#3d494c]/30 bg-[#0e131f]">
+            <div ref={playerWrapperRef} data-player-wrapper="true" className="flex h-full flex-col">
+              <div data-player-stage="true" className="flex min-h-0 flex-1 items-center justify-center p-4">
+                <div data-player-surface="true" className="relative aspect-video w-full max-w-4xl overflow-hidden rounded border border-[#3d494c]/30 bg-[#0e131f]">
                   {selectedClip ? (
                     <video
                       ref={videoRef}
@@ -1077,6 +1104,7 @@ export default function EditorPage() {
                       src={selectedClip.url}
                       className="h-full w-full object-cover"
                       playsInline
+                      controlsList="nodownload noremoteplayback"
                       disablePictureInPicture
                       onContextMenu={(e) => e.preventDefault()}
                       onLoadStart={() => setMediaReady(false)}
@@ -1232,7 +1260,7 @@ export default function EditorPage() {
 
                 <div className="flex items-center gap-2 text-[11px] text-[#bcc9cd]">
                   <span className="font-mono">{selectedClip ? (mediaReady ? `${formatTime(duration)} runtime` : "Loading video metadata") : "Waiting for media"}</span>
-                  <button type="button" onClick={() => void videoRef.current?.requestFullscreen()} disabled={!selectedClip} className="p-1 transition-colors hover:text-[#dde2f3] disabled:opacity-40" aria-label="Fullscreen">
+                  <button type="button" onClick={() => void requestPlayerFullscreen()} disabled={!selectedClip} className="p-1 transition-colors hover:text-[#dde2f3] disabled:opacity-40" aria-label="Fullscreen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                       <path d="M8 3H3v5" />
                       <path d="M16 3h5v5" />
@@ -1569,12 +1597,39 @@ export default function EditorPage() {
                 <div>
                   <p>Export completed. Preview and download the stored MP4.</p>
                   <video
-                    controls
+                    ref={exportVideoRef}
                     preload="metadata"
                     src={outputUrl}
+                    playsInline
+                    controlsList="nodownload noremoteplayback"
+                    disablePictureInPicture
+                    onContextMenu={(event) => event.preventDefault()}
+                    onLoadStart={() => {
+                      setIsExportPreviewPlaying(false);
+                      setExportPreviewTime(0);
+                      setExportPreviewDuration(0);
+                    }}
+                    onLoadedMetadata={(event) => {
+                      setExportPreviewDuration(event.currentTarget.duration);
+                      setExportPreviewTime(event.currentTarget.currentTime);
+                    }}
+                    onTimeUpdate={(event) => setExportPreviewTime(event.currentTarget.currentTime)}
+                    onPlay={() => setIsExportPreviewPlaying(true)}
+                    onPause={() => setIsExportPreviewPlaying(false)}
                     onError={() => { setExportState("failed"); setExportError("The stored export is unavailable. Render the current timeline again."); }}
                     className="mt-3 max-h-56 w-full rounded bg-black"
                   />
+                  <div className="mt-2 flex items-center gap-2">
+                    <button type="button" onClick={() => void toggleExportPreview()} disabled={!exportPreviewDuration} className="rounded border border-[#3d494c]/40 px-2 py-1 text-[11px] text-[#dde2f3] disabled:opacity-40" aria-label={isExportPreviewPlaying ? "Pause export preview" : "Play export preview"}>
+                      {isExportPreviewPlaying ? "Pause preview" : "Play preview"}
+                    </button>
+                    <input type="range" aria-label="Seek export preview" min={0} max={exportPreviewDuration || 0} step={0.05} value={Math.min(exportPreviewTime, exportPreviewDuration || 0)} onChange={(event) => {
+                      const time = Number(event.currentTarget.value);
+                      if (exportVideoRef.current) exportVideoRef.current.currentTime = time;
+                      setExportPreviewTime(time);
+                    }} disabled={!exportPreviewDuration} className="min-w-0 flex-1 accent-[#4cd7f6] disabled:opacity-40" />
+                    <span className="font-mono text-[10px] text-[#bcc9cd]">{formatTime(exportPreviewTime)} / {formatTime(exportPreviewDuration)}</span>
+                  </div>
                   {exportDownloadUrl ? <a href={exportDownloadUrl} className="mt-3 inline-block rounded border border-[#4cd7f6]/40 px-3 py-2 text-[#4cd7f6]">Download MP4</a> : null}
                 </div>
               ) : exportState !== "rendering" && exportState !== "failed" ? <p>The current kept timeline segments will be rendered to an MP4.</p> : null}

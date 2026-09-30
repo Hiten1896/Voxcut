@@ -34,6 +34,8 @@ export async function GET(request: Request) {
     const contentType = extension === ".mp4" ? "video/mp4" : extension === ".json" ? "application/json" : "application/octet-stream";
     const range = request.headers.get("range");
 
+    // TODO: replace free source previews with a low-resolution watermarked proxy and reserve full-quality access for export after subscription checks are introduced.
+
     if (range && contentType.startsWith("video/")) {
       const parsedRange = parseByteRange(range, stat.size);
       if (!parsedRange) {

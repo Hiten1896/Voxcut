@@ -201,3 +201,11 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - Added `"type": "module"` to `package.json` as requested. With that change, `npm test` passed 36/36 and `npm run build` passed; Node's prior module-type warnings disappeared. Keeping the change.
 - The full required pre-commit checks (`npx tsc --noEmit`, `npm test`, `npm run lint`) passed; lint still has only the two existing landing-page warnings. `git diff --check` passed.
 - Next: B9 (wrapper fullscreen/custom controls and prevent native download UI).
+
+## Phase 1 B9 — Fullscreen player controls and download UI (2026-09-30)
+
+- Fullscreen now targets the wrapper containing the main video and its custom controls. Fullscreen CSS expands the video surface and switches the media to `object-fit: contain`; the browser's native video fullscreen UI is not requested.
+- Both source and export preview videos have no native `controls` attribute. The export preview now has custom play/pause and seek controls. Both videos set `controlsList="nodownload noremoteplayback"`, disable picture-in-picture, and suppress the context menu.
+- Added the requested media-route TODO: use a low-resolution watermarked source preview and reserve full-quality access for export after subscription checks are introduced.
+- Verification: `npx tsc --noEmit`, `npm test` (36/36), `npm run lint` (0 errors, two existing image warnings), `npm run build`, and `git diff --check` passed. Fullscreen behavior and absence of a browser-native menu remain UNVERIFIED in a real browser.
+- Next in the requested order: B4 + B5 + B7, then B6, then B8.
