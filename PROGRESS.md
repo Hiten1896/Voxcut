@@ -151,3 +151,16 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - `npm run lint`: passed with 0 errors and 2 existing landing-page `<img>` warnings.
 - `npm run build`: passed; all 18 static pages and app/API routes compiled.
 - `git diff --check`: passed; Git reported only the existing LF-to-CRLF working-copy normalization warning for the two Markdown files.
+
+## Updated task — Phase 0 baseline and fixtures (2026-09-30)
+
+- `npm install`: passed (`up to date`).
+- `npx tsc --noEmit`: passed.
+- `npm test`: first run was blocked for four FFmpeg child-process cases by sandbox `spawn EPERM`; rerun with permission to launch FFmpeg passed 27/27.
+- `npm run lint`: passed with zero errors and the same two `<img>` warnings in `app/page.tsx`.
+- `npm run build`: passed; Next.js compiled all 18 static pages and app/API routes.
+- FFmpeg/FFprobe version 9.0.1 is installed in the local WinGet package directory. They resolve in the elevated shell used for FFmpeg runs, but are not recognized as commands in the restricted default PowerShell shell; application path resolution finds the installation.
+- Environment variable names referenced by app/lib: `GEMINI_API_KEY` (needed for Gemini transcription/planning), `VOXCUT_SESSION_SECRET` (optional in current code, which falls back to a default if missing), `NODE_ENV` (framework mode), `LOCALAPPDATA` (Windows FFmpeg discovery). `FFMPEG_PATH`, `FFMPEG_BIN`, `FFPROBE_PATH`, and `FFPROBE_BIN` are supported executable overrides. Values were not displayed.
+- Production placeholder scan: `app/editor/page.tsx` uses timers for polling actual `transcribing` state and delayed download object-URL revocation (legitimate lifecycle); its `placeholder` matches are HTML input hints (legitimate UI). No production `mock`, `fake`, `dummy`, or `Math.random` hit was found. Hardcoded-array scan matches are runtime React state/array operations and timeline data mapping, not mock clip/caption fixtures.
+- Added `tests/fixtures/speech-tone-20s.mp4` (generated synthetic speech audio), `tests/fixtures/no-audio-20s.mp4`, and `tests/fixtures/silent-audio-20s.mp4`. All are 320x180, 20 seconds, and about 0.5 MB each. FFprobe independently confirmed 20.000 seconds; audio stream listing confirmed speech-tone has audio, no-audio has none, and silent-audio has an audio stream. The speech fixture is synthetic and is not evidence of real Gemini accuracy.
+- Phase 0 is complete. Next: address Phase 1 B1 (no-audio preflight and sanitized, categorized transcription failures) with focused tests, then B2. Do not claim B1 fixed until route/UI behavior and tests are run.
