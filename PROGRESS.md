@@ -209,3 +209,11 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - Added the requested media-route TODO: use a low-resolution watermarked source preview and reserve full-quality access for export after subscription checks are introduced.
 - Verification: `npx tsc --noEmit`, `npm test` (36/36), `npm run lint` (0 errors, two existing image warnings), `npm run build`, and `git diff --check` passed. Fullscreen behavior and absence of a browser-native menu remain UNVERIFIED in a real browser.
 - Next in the requested order: B4 + B5 + B7, then B6, then B8.
+
+## Phase 1 B4 + B5 + B7 — Timeline normalization, labels, and history reset (2026-09-30)
+
+- Restoring a removed interval inserts it next to adjacent kept source footage. Accidental touching kept intervals normalize into one interval; intentional split seams retain their two-block behavior. Source overlaps remain invalid. Trimming now validates against source-ordered neighbors, including when the timeline itself has been reordered.
+- Timeline time labels display tenths when meaningful, so fractional trim edges are visible. The player runtime now reports the edited timeline's kept duration instead of the full source duration. Segment labels continue to use actual segment ranges.
+- Loading a new timeline already resets undo/redo history; sign-out now also clears edit segments, selection, and both history stacks so a previous account's edits cannot be redone in a later session. Undo/redo controls remain disabled when their respective stack is empty.
+- Added coverage for normalization, preserved split seams, reordered trimming, and fractional time display. Verification: `npx tsc --noEmit` passed; `npm test` passed 37/37 including FFmpeg integrations; `npm run lint` passed with 0 errors and the two existing landing-page image warnings; `npm run build` passed; `git diff --check` passed (Windows line-ending notices only).
+- Next: B6, align timeline ruler/track/playhead/click seeking to a shared time-to-pixel scale and make ruler ticks adaptive.

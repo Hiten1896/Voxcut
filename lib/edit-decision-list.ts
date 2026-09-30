@@ -1,25 +1,57 @@
-export type KeepSegment = { id: string; start: number; end: number };
+export type KeepSegment = { id: string; start: number; end: number; splitBoundaryBefore?: boolean };
 
-export function validateKeepSegments(value: unknown, duration: number): KeepSegment[] {
-  if (!Number.isFinite(duration) || duration <= 0 || !Array.isArray(value) || value.length > 500) {
-    throw new Error("Invalid edit timeline.");
-  }
+function normalizeSegmentList(value: unknown): KeepSegment[] {
+  if (!Array.isArray(value) || value.length > 500) throw new Error("Invalid edit timeline.");
   const segments = value.map((item) => {
     if (!item || typeof item !== "object") throw new Error("Invalid edit segment.");
     const segment = item as Record<string, unknown>;
     if (typeof segment.id !== "string" || !segment.id.trim() || segment.id.length > 100
-      || !Number.isFinite(segment.start) || !Number.isFinite(segment.end)) throw new Error("Invalid edit segment.");
-    return { id: segment.id, start: Number(segment.start), end: Number(segment.end) };
+      || !Number.isFinite(segment.start) || !Number.isFinite(segment.end)
+      || (segment.splitBoundaryBefore !== undefined && typeof segment.splitBoundaryBefore !== "boolean")) throw new Error("Invalid edit segment.");
+    return {
+      id: segment.id,
+      start: Number(segment.start),
+      end: Number(segment.end),
+      ...(segment.splitBoundaryBefore === true ? { splitBoundaryBefore: true } : {}),
+    };
   });
   if (new Set(segments.map((segment) => segment.id)).size !== segments.length) throw new Error("Edit segment identifiers must be unique.");
-  let previousEnd = 0;
-  for (const segment of [...segments].sort((a, b) => a.start - b.start)) {
-    if (segment.start < 0 || segment.end <= segment.start || segment.end > duration || segment.start < previousEnd) {
+
+  const normalized: KeepSegment[] = [];
+  for (const segment of segments) {
+    if (segment.start < 0 || segment.end <= segment.start) throw new Error("Edit segments must have positive ranges within the source video.");
+    let current = segment;
+    while (normalized.length && !current.splitBoundaryBefore) {
+      const previous = normalized[normalized.length - 1];
+      const touches = current.start === previous.end || current.end === previous.start;
+      if (!touches) break;
+      current = {
+        ...previous,
+        start: Math.min(previous.start, current.start),
+        end: Math.max(previous.end, current.end),
+      };
+      normalized.pop();
+      if (previous.splitBoundaryBefore) current.splitBoundaryBefore = true;
+    }
+    normalized.push(current);
+  }
+  if (normalized.length === 0) throw new Error("The edit timeline must keep at least one segment.");
+  const sourceOrdered = [...normalized].sort((a, b) => a.start - b.start);
+  for (let index = 0; index < sourceOrdered.length; index += 1) {
+    const segment = sourceOrdered[index];
+    if (index > 0 && segment.start < sourceOrdered[index - 1].end) {
       throw new Error("Edit segments must be non-overlapping and within the source video.");
     }
-    previousEnd = segment.end;
   }
-  if (segments.length === 0) throw new Error("The edit timeline must keep at least one segment.");
+  return normalized;
+}
+
+export function validateKeepSegments(value: unknown, duration: number): KeepSegment[] {
+  if (!Number.isFinite(duration) || duration <= 0) throw new Error("Invalid edit timeline.");
+  const segments = normalizeSegmentList(value);
+  if (segments.some((segment) => segment.end > duration)) {
+    throw new Error("Edit segments must be non-overlapping and within the source video.");
+  }
   return segments;
 }
 
@@ -40,10 +72,10 @@ export function keepSegmentsFromCuts(cuts: Array<{ start: number; end: number }>
 export function splitKeepSegment(segments: KeepSegment[], id: string, at: number): KeepSegment[] {
   const target = segments.find((segment) => segment.id === id);
   if (!target || at <= target.start || at >= target.end) throw new Error("Choose a playhead position inside the selected segment to split it.");
-  return segments.flatMap((segment) => segment.id !== id ? [segment] : [
+  return normalizeSegmentList(segments.flatMap((segment) => segment.id !== id ? [segment] : [
     { ...segment, id: `${segment.id}-a-${Math.round(at * 1000)}`, end: at },
-    { ...segment, id: `${segment.id}-b-${Math.round(at * 1000)}`, start: at },
-  ]);
+    { ...segment, id: `${segment.id}-b-${Math.round(at * 1000)}`, start: at, splitBoundaryBefore: true },
+  ]));
 }
 
 export function trimKeepSegment(segments: KeepSegment[], id: string, edge: "start" | "end", at: number, minLength = 0.1): KeepSegment[] {
@@ -57,12 +89,7 @@ export function trimKeepSegment(segments: KeepSegment[], id: string, edge: "star
   const start = edge === "start" ? Math.max(current.start, previous?.end ?? 0, Math.min(at, current.end - minLength)) : current.start;
   const end = edge === "end" ? Math.min(current.end, next?.start ?? Number.POSITIVE_INFINITY, Math.max(at, current.start + minLength)) : current.end;
   const result = segments.map((segment, segmentIndex) => segmentIndex === index ? { ...segment, start, end } : segment);
-  let previousEnd = 0;
-  for (const segment of result) {
-    if (segment.start < previousEnd || segment.end <= segment.start) throw new Error("The trim would overlap or remove a timeline segment.");
-    previousEnd = segment.end;
-  }
-  return result;
+  return normalizeSegmentList(result);
 }
 
 export function addKeepSegment(segments: KeepSegment[], duration: number, at: number, length = 2): KeepSegment[] {
@@ -77,7 +104,13 @@ export function addKeepSegment(segments: KeepSegment[], duration: number, at: nu
   if (!gap || gap.end - gap.start < 0.1) throw new Error("There is no removed interval at the playhead to restore.");
   const restoredStart = Math.max(gap.start, Math.min(position, gap.end - Math.min(length, gap.end - gap.start)));
   const restoredEnd = Math.min(gap.end, restoredStart + length);
-  const result = [...segments, { id: `restored-${Date.now()}-${Math.round(restoredStart * 1000)}`, start: restoredStart, end: restoredEnd }];
+  const restored = { id: `restored-${Date.now()}-${Math.round(restoredStart * 1000)}`, start: restoredStart, end: restoredEnd };
+  const previous = [...segments].filter((segment) => segment.end <= restoredStart).sort((a, b) => a.end - b.end).at(-1);
+  const next = [...segments].filter((segment) => segment.start >= restoredEnd).sort((a, b) => a.start - b.start)[0];
+  const insertAfter = previous ? segments.indexOf(previous) + 1 : -1;
+  const insertBefore = next ? segments.indexOf(next) : segments.length;
+  const insertionIndex = insertAfter >= 0 && insertAfter <= insertBefore ? insertAfter : insertBefore;
+  const result = [...segments.slice(0, insertionIndex), restored, ...segments.slice(insertionIndex)];
   return validateKeepSegments(result, duration);
 }
 

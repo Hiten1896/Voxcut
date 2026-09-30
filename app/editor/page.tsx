@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { clearPendingUpload, getPendingUpload, setPendingUpload } from "@/lib/pending-upload";
 import { parseStoredVideoReference } from "@/lib/project-media";
 import { isAllowedVideoUpload } from "@/lib/security";
+import { formatTime } from "@/lib/time-format";
 import type { Transcript } from "@/lib/types";
 import { addKeepSegment, cutsFromKeepSegments, getPlaybackBoundary, getSourceCoverage, getTimelineDuration, keepSegmentsFromCuts, moveKeepSegment, sourceTimeAtTimelineTime, splitKeepSegment, timelineTimeAtSourceTime, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
 import type { TranscriptHighlight } from "@/lib/highlight-detection";
@@ -38,13 +39,6 @@ type PendingPlan = {
   cuts: Array<{ action: "cut"; start: number; end: number; reason?: string }>;
   segments: KeepSegment[];
 };
-
-function formatTime(seconds: number) {
-  const s = Number.isFinite(seconds) ? Math.max(seconds, 0) : 0;
-  const mins = String(Math.floor(s / 60)).padStart(2, "0");
-  const secs = String(Math.floor(s % 60)).padStart(2, "0");
-  return `${mins}:${secs}`;
-}
 
 export default function EditorPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -184,6 +178,10 @@ export default function EditorPage() {
     setSelectedClipId(null);
     setOutputUrl(null);
     setEditPlan([]);
+    setEditSegments([]);
+    setTimelineUndo([]);
+    setTimelineRedo([]);
+    setSelectedEditSegmentId(null);
     setPendingPlan(null);
   };
 
@@ -1259,7 +1257,7 @@ export default function EditorPage() {
                 </div>
 
                 <div className="flex items-center gap-2 text-[11px] text-[#bcc9cd]">
-                  <span className="font-mono">{selectedClip ? (mediaReady ? `${formatTime(duration)} runtime` : "Loading video metadata") : "Waiting for media"}</span>
+                  <span className="font-mono">{selectedClip ? (mediaReady ? `${formatTime(timelineDuration)} runtime` : "Loading video metadata") : "Waiting for media"}</span>
                   <button type="button" onClick={() => void requestPlayerFullscreen()} disabled={!selectedClip} className="p-1 transition-colors hover:text-[#dde2f3] disabled:opacity-40" aria-label="Fullscreen">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-4 w-4">
                       <path d="M8 3H3v5" />
