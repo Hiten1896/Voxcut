@@ -30,6 +30,15 @@ type SessionUser = {
   email: string;
 };
 
+type PendingPlan = {
+  id: string;
+  videoId: string;
+  prompt: string;
+  operation: string;
+  cuts: Array<{ action: "cut"; start: number; end: number; reason?: string }>;
+  segments: KeepSegment[];
+};
+
 function formatTime(seconds: number) {
   const s = Number.isFinite(seconds) ? Math.max(seconds, 0) : 0;
   const mins = String(Math.floor(s / 60)).padStart(2, "0");
@@ -43,6 +52,7 @@ export default function EditorPage() {
   const [clips, setClips] = useState<LoadedClip[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [prompt, setPrompt] = useState("");
+  const [pendingPlan, setPendingPlan] = useState<PendingPlan | null>(null);
   const [status, setStatus] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
@@ -169,6 +179,7 @@ export default function EditorPage() {
     setSelectedClipId(null);
     setOutputUrl(null);
     setEditPlan([]);
+    setPendingPlan(null);
   };
 
   const selectedClip = useMemo(
@@ -799,6 +810,10 @@ export default function EditorPage() {
   };
 
   const handleGenerate = async () => {
+    if (pendingPlan) {
+      setStatus("Apply or cancel the current edit plan before requesting another one.");
+      return;
+    }
     if (!authUser) {
       setStatus("Please sign in before creating an edit plan.");
       return;
@@ -834,24 +849,45 @@ export default function EditorPage() {
         throw new Error("The planner returned an invalid plan for this video.");
       }
       const nextPlan = planResult.cuts as Array<{ action: "cut"; start: number; end: number; reason?: string }>;
-      const nextCount = nextPlan.length;
+      if (nextPlan.some((cut) => !cut || cut.action !== "cut" || !Number.isFinite(cut.start) || !Number.isFinite(cut.end) || cut.start < 0 || cut.end <= cut.start || cut.end > duration)) {
+        throw new Error("The planner returned cut ranges outside this video.");
+      }
       const trimmedPrompt = prompt.trim();
       const proposedSegments = keepSegmentsFromCuts(nextPlan, duration);
-      commitTimeline(proposedSegments);
-      setSelectedEditSegmentId(proposedSegments[0]?.id ?? null);
-      setOutputUrl(null);
-      setEditPlan(nextPlan);
-      setCurrentTime(0);
       if (typeof payload.promptLogId !== "string") throw new Error("The edit plan was created, but its history record could not be saved.");
-      setHistory((previous) => [
-        { id: payload.promptLogId, prompt: trimmedPrompt, cuts: nextCount, operation: planResult.operation!, cutRanges: nextPlan, feedback: null },
-        ...previous,
-      ]);
+      setPendingPlan({ id: payload.promptLogId, videoId: selectedClip.videoId, prompt: trimmedPrompt, operation: planResult.operation!, cuts: nextPlan, segments: proposedSegments });
       setStatus("");
-      setPrompt("");
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Prompt failed.");
     }
+  };
+
+  const applyPendingPlan = () => {
+    if (!pendingPlan) return;
+    if (pendingPlan.videoId !== selectedClip?.videoId) {
+      setPendingPlan(null);
+      setStatus("This plan belongs to a different video and was not applied.");
+      return;
+    }
+    if (exportState === "rendering") {
+      setStatus("Wait for the current render to finish before applying this plan.");
+      return;
+    }
+    commitTimeline(pendingPlan.segments);
+    setSelectedEditSegmentId(pendingPlan.segments[0]?.id ?? null);
+    setCurrentTime(pendingPlan.segments[0]?.start ?? 0);
+    setHistory((previous) => [
+      { id: pendingPlan.id, prompt: pendingPlan.prompt, cuts: pendingPlan.cuts.length, operation: pendingPlan.operation, cutRanges: pendingPlan.cuts, feedback: null },
+      ...previous,
+    ]);
+    setPrompt("");
+    setPendingPlan(null);
+    setStatus("The reviewed edit plan was applied. Use Undo to restore the previous timeline.");
+  };
+
+  const cancelPendingPlan = () => {
+    setPendingPlan(null);
+    setStatus("Edit plan canceled. The timeline was not changed.");
   };
 
   const handleFeedback = async (id: string, feedback: "up" | "down") => {
@@ -1275,6 +1311,17 @@ export default function EditorPage() {
                   </div>
                 ))}
               </section>
+              {pendingPlan ? (
+                <section aria-label="Edit plan preview" className="mb-3 rounded-lg border border-[#4cd7f6]/35 bg-[#161c28] p-3">
+                  <h2 className="text-[12px] font-medium uppercase tracking-[0.12em] text-[#4cd7f6]">Review edit plan · {pendingPlan.operation}</h2>
+                  <p className="mt-1 text-[12px] text-[#bcc9cd]">{pendingPlan.cuts.length ? `Remove ${pendingPlan.cuts.length} source range${pendingPlan.cuts.length === 1 ? "" : "s"}.` : "This plan keeps all current source footage."} The timeline will change only after you apply it.</p>
+                  {pendingPlan.cuts.length ? <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto">{pendingPlan.cuts.map((cut, index) => <li key={`${cut.start}-${index}`} className="text-[11px] text-[#dde2f3]">{formatTime(cut.start)}–{formatTime(cut.end)}{cut.reason ? ` · ${cut.reason}` : ""}</li>)}</ul> : null}
+                  <div className="mt-3 flex gap-2">
+                    <button type="button" onClick={cancelPendingPlan} className="rounded border border-[#3d494c]/50 px-3 py-1.5 text-[11px] text-[#bcc9cd]">Cancel</button>
+                    <button type="button" onClick={applyPendingPlan} disabled={exportState === "rendering"} className="rounded bg-[#06b6d4] px-3 py-1.5 text-[11px] font-medium text-[#0e131f] disabled:opacity-50">Apply plan</button>
+                  </div>
+                </section>
+              ) : null}
               <div className="flex flex-col gap-2.5">
                 {history.length > 0 ? history.map((entry) => (
                   <div key={entry.id} className="flex flex-col gap-2 rounded-lg border border-[#3d494c]/30 bg-[#161c28] p-3">
@@ -1315,13 +1362,14 @@ export default function EditorPage() {
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
                   onKeyDown={handleKeyDown}
+                  disabled={!!pendingPlan}
                   placeholder="Describe the edit you want..."
                   className="w-full border-0 bg-transparent p-0 text-[13px] text-[#dde2f3] placeholder:text-[#869397] focus:ring-0"
                 />
                 <button
                   type="button"
                   onClick={handleGenerate}
-                  disabled={!prompt.trim() || !currentTranscript || currentTranscriptionStatus !== "completed"}
+                  disabled={!!pendingPlan || !prompt.trim() || !currentTranscript || currentTranscriptionStatus !== "completed"}
                   className="flex h-7 w-7 shrink-0 items-center justify-center rounded bg-[#06b6d4] text-[#0e131f] transition-colors hover:bg-[#5de6ff] disabled:cursor-not-allowed disabled:opacity-40"
                   aria-label="Send prompt"
                 >

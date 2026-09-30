@@ -52,6 +52,7 @@
 - Trimming now uses the segment's project-time position while honoring source neighbors, even after reordering. Adjacent segments can be moved earlier/later, and the ordered EDL remains the persisted/exported source of truth.
 - Evidence: new automated EDL test covers reorder, validation preserving order, cut list equivalence, time mapping, and playback transitions. Full `npm test` passed 25/25; `npx tsc --noEmit`, `npm run build`, and `git diff --check` passed; `npm run lint` passed with only the two existing landing-page image warnings.
 - Additional render-order evidence: the focused FFmpeg suite passed 3/3. A generated red-then-blue source rendered with intervals reversed was decoded and sampled; the first output section was blue and the second red, proving the render command consumes the reordered timeline sequence.
+- The integration suite now calls the production `renderSelectedSegments` function directly (including its FFprobe validation and cleanup path), instead of calling only its FFmpeg argument builder. Relative TypeScript imports plus `allowImportingTsExtensions` make this production function directly runnable by Node's built-in strip-types test runner.
 - UNVERIFIED: actual browser pointer interactions, playback jumps, visual zoom/scroll behavior, and undo/redo across a reordered timeline. Playwright could not be installed: both registry install attempts stalled; offline install reported no matching cached tarball. The required modern-web-guidance CLI also could not be fetched/cached; current React and MDN media references were consulted instead.
 - Next: add/run real Playwright E2E tests when package/browser installation is possible; then implement the requested operation registry and editing operations.
 
@@ -61,3 +62,8 @@
 - A disposable 8-second spoken MP3 was generated locally with FFmpeg's `flite` filter; it was removed after the attempt.
 - The real `requestGeminiTranscription` call was attempted using the environment key, but returned the provider wrapper error `Gemini could not be reached to transcribe this video.` No live transcript was obtained, so a real edit-plan call was not attempted with invented transcript data.
 - Live provider verification is BLOCKED by the runtime's network connectivity to Google; mocked provider tests remain separate and do not count as live verification.
+
+## Phase 3 — AI plan preview
+
+- The editor now holds a validated planner result as a pending plan and presents its operation, cut ranges, and reasons with explicit Apply/Cancel controls. It does not modify the edit timeline until Apply; applying uses the existing undo history. Applying is guarded against a source-video mismatch and an active render.
+- Browser-level Apply/Cancel verification remains UNVERIFIED because Playwright and an authenticated browser session are not available here.
