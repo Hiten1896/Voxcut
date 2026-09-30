@@ -5,7 +5,7 @@ import { clearPendingUpload, getPendingUpload, setPendingUpload } from "@/lib/pe
 import { parseStoredVideoReference } from "@/lib/project-media";
 import { isAllowedVideoUpload } from "@/lib/security";
 import type { Transcript } from "@/lib/types";
-import { addKeepSegment, cutsFromKeepSegments, getPlaybackBoundary, getTimelineDuration, keepSegmentsFromCuts, moveKeepSegment, sourceTimeAtTimelineTime, splitKeepSegment, timelineTimeAtSourceTime, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
+import { addKeepSegment, cutsFromKeepSegments, getPlaybackBoundary, getSourceCoverage, getTimelineDuration, keepSegmentsFromCuts, moveKeepSegment, sourceTimeAtTimelineTime, splitKeepSegment, timelineTimeAtSourceTime, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
 import type { TranscriptHighlight } from "@/lib/highlight-detection";
 
 type HistoryItem = {
@@ -193,6 +193,7 @@ export default function EditorPage() {
     [duration, editPlan, editSegments],
   );
   const timelineDuration = getTimelineDuration(timelineSegments);
+  const sourceCoverage = useMemo(() => getSourceCoverage(timelineSegments, duration), [duration, timelineSegments]);
   const timelineCurrentTime = timelineTimeAtSourceTime(timelineSegments, currentTime);
   const progressPct = timelineDuration > 0 ? Math.max(0, Math.min((timelineCurrentTime / timelineDuration) * 100, 100)) : 0;
   const activeProjectId = useMemo(() => (authUser ? `project-${authUser.id.slice(0, 8)}` : "default-project"), [authUser]);
@@ -1417,8 +1418,22 @@ export default function EditorPage() {
               <button type="button" disabled={!timelineUndo.length || exportState === "rendering"} onClick={undoTimeline} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Undo</button>
               <button type="button" disabled={!timelineRedo.length || exportState === "rendering"} onClick={redoTimeline} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Redo</button>
             </div>
-            <div className="min-h-0 flex-1 overflow-x-auto rounded bg-[#0e131f]">
-            <div data-timeline-track="true" className="relative h-full overflow-hidden" style={{ minWidth: `max(100%, ${timelineDuration * 60 * timelineZoom}px)` }} onClick={(event) => {
+            <div className="flex min-h-0 flex-1 flex-col overflow-x-auto overflow-y-hidden rounded bg-[#0e131f]">
+              {duration > 0 ? (
+              <div className="shrink-0 py-1" style={{ minWidth: `max(100%, ${duration * 60 * timelineZoom}px)` }}>
+                <div className="mb-1 flex items-center gap-2 text-[9px] text-[#a9b9bf]">
+                  <span>Source coverage</span>
+                  <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-sm bg-[#26718a]" />Kept</span>
+                  <span className="flex items-center gap-1"><i className="h-2 w-2 rounded-sm" style={{ backgroundImage: "repeating-linear-gradient(135deg, #303a46 0px, #303a46 2px, #202833 2px, #202833 4px)" }} />Removed</span>
+                </div>
+                <div role="img" aria-label="Source coverage. Solid blue sections are kept; hatched sections are removed." className="relative h-2.5 overflow-hidden rounded-sm" style={{ backgroundImage: "repeating-linear-gradient(135deg, #303a46 0px, #303a46 5px, #202833 5px, #202833 10px)" }}>
+                  {sourceCoverage.map((range, index) => (
+                    <span key={`${range.type}-${range.start}-${index}`} aria-hidden="true" className={`absolute inset-y-0 ${range.type === "kept" ? "bg-[#26718a]" : ""}`} style={{ left: `${(range.start / duration) * 100}%`, width: `${((range.end - range.start) / duration) * 100}%` }} />
+                  ))}
+                </div>
+              </div>
+            ) : null}
+            <div data-timeline-track="true" className="relative min-h-0 flex-1 overflow-hidden" style={{ minWidth: `max(100%, ${timelineDuration * 60 * timelineZoom}px)` }} onClick={(event) => {
               if (!timelineDuration || !mediaReady) return;
               const rect = event.currentTarget.getBoundingClientRect();
               handleTimelineScrub(Math.max(0, Math.min(timelineDuration, ((event.clientX - rect.left) / rect.width) * timelineDuration)));
@@ -1449,7 +1464,7 @@ export default function EditorPage() {
                         setSelectedEditSegmentId(editSegment?.id ?? null);
                         handleScrub(segment.start);
                       }}
-                      className={`absolute bottom-1 top-1 overflow-hidden rounded border p-1 text-left ${selected ? "border-[#4cd7f6] bg-[#17415a]" : "border-[#3d494c]/50 bg-[#1a202c]"}`}
+                      className={`absolute bottom-1 top-1 overflow-hidden rounded border p-1 text-left transition-colors ${selected ? "border-[#4cd7f6] bg-[#12617a] shadow-[inset_0_0_0_1px_rgba(76,215,246,0.28)]" : "border-[#4380a0]/80 bg-[#245267] hover:bg-[#2d647c]"}`}
                       style={{ left: `${timelineDuration ? (segment.timelineStart / timelineDuration) * 100 : 0}%`, width: `${segment.width}%` }}
                     >
                       <span className="block truncate text-[10px] font-medium text-[#dde2f3]">Keep {formatTime(segment.start)}–{formatTime(segment.end)}</span>

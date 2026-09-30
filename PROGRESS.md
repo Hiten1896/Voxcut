@@ -184,3 +184,12 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - This is PARTIAL against requested B2: explicit trims/ranges work in code, but no authenticated route/browser test ran. Speed changes and dead-pause removal are not implemented and are explicitly rejected with an explanation until their actual timeline/render operations are built. Ambiguous prompts do not get guessed.
 - Verification: `npx tsc --noEmit` passed; `npm test` passed 31/31 (FFmpeg integration tests included); `npm run lint` passed with zero errors and two existing image warnings; `npm run build` passed; `git diff --check` passed with Windows line-ending normalization warnings.
 - Next: B3, make all kept timeline intervals visibly filled and removed ranges visibly empty/hatched, with focused rendering/helper coverage.
+
+## Phase 1 B3 — Visible kept and removed source coverage (2026-09-30)
+
+- Added a compact source-coverage strip above the output timeline. Kept source intervals render as solid blue blocks; removed source intervals remain visible as a hatched background, including when the output segments are reordered.
+- Non-selected timeline segments now have a distinct filled teal surface, while selection uses a brighter fill and border. This makes kept blocks visible without selecting them.
+- Added `getSourceCoverage` and test `source coverage sorts kept blocks and exposes removed gaps independently of timeline order`, so gaps are derived from actual kept intervals rather than sample data.
+- Browser visual verification remains UNVERIFIED because Playwright is unavailable; build and lint pass, but only helper state was asserted automatically.
+- Verification: `npx tsc --noEmit` passed; `npm test` passed 32/32; `npm run lint` passed with 0 errors and two existing image warnings; `npm run build` passed; `git diff --check` passed with line-ending warnings only.
+- Next: B4, normalize kept intervals after restore/trim/split and cover invariants; then B5 labels/runtime.

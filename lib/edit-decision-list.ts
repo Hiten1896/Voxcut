@@ -96,6 +96,18 @@ export function getTimelineDuration(segments: KeepSegment[]) {
   return segments.reduce((total, segment) => total + segment.end - segment.start, 0);
 }
 
+export function getSourceCoverage(segments: KeepSegment[], duration: number) {
+  const coverage: Array<{ type: "kept" | "removed"; start: number; end: number }> = [];
+  let cursor = 0;
+  for (const segment of [...segments].sort((a, b) => a.start - b.start)) {
+    if (segment.start > cursor) coverage.push({ type: "removed", start: cursor, end: segment.start });
+    coverage.push({ type: "kept", start: segment.start, end: segment.end });
+    cursor = segment.end;
+  }
+  if (cursor < duration) coverage.push({ type: "removed", start: cursor, end: duration });
+  return coverage;
+}
+
 export function sourceTimeAtTimelineTime(segments: KeepSegment[], time: number) {
   if (!segments.length) return 0;
   const safeTime = Math.max(0, Math.min(time, getTimelineDuration(segments)));
