@@ -217,3 +217,10 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - Loading a new timeline already resets undo/redo history; sign-out now also clears edit segments, selection, and both history stacks so a previous account's edits cannot be redone in a later session. Undo/redo controls remain disabled when their respective stack is empty.
 - Added coverage for normalization, preserved split seams, reordered trimming, and fractional time display. Verification: `npx tsc --noEmit` passed; `npm test` passed 37/37 including FFmpeg integrations; `npm run lint` passed with 0 errors and the two existing landing-page image warnings; `npm run build` passed; `git diff --check` passed (Windows line-ending notices only).
 - Next: B6, align timeline ruler/track/playhead/click seeking to a shared time-to-pixel scale and make ruler ticks adaptive.
+
+## Phase 1 B6 — Shared timeline scale and adaptive ruler (2026-09-30)
+
+- Moved the ruler into the track's shared horizontal scroller. Both use the measured viewport/content width, so the ruler labels, kept blocks, playhead, trim handles, and click-to-seek positions use the same pixel axis, including at low zoom and for short timelines.
+- Added shared pixel/time conversion helpers and adaptive “nice” tick intervals that maintain at least 80px between labels (except a final endpoint label, which is shown only when it fits). Pointer seeking and trim drags now convert against that same axis.
+- Verification: `npx tsc --noEmit` passed; `npm test` passed 38/38; `npm run lint` passed with 0 errors and two existing landing-page image warnings; `npm run build` passed; `git diff --check` passed (line-ending notices only). Visual alignment and scrolling remain unverified in a real browser.
+- Next: B8, make status notifications dismiss after a short period and clear stale notifications when the project/media changes.
