@@ -6,19 +6,30 @@ export type ProviderTranscript = {
   words: Array<{ start: number; end: number; text: string }>;
 };
 
+export type TranscriptionErrorCode = "NO_AUDIO_TRACK" | "NO_SPEECH" | "QUOTA_OR_KEY_ERROR" | "PROVIDER_ERROR" | "CONFIGURATION_ERROR";
+
 export class TranscriptionError extends Error {
   readonly status: number;
+  readonly code: TranscriptionErrorCode;
 
-  constructor(message: string, status = 502) {
+  constructor(message: string, status = 502, code: TranscriptionErrorCode = "PROVIDER_ERROR") {
     super(message);
     this.name = "TranscriptionError";
     this.status = status;
+    this.code = code;
   }
+}
+
+export function requireSpeechTranscript(transcript: ProviderTranscript): ProviderTranscript {
+  if (!transcript.text.trim() && transcript.words.length === 0) {
+    throw new TranscriptionError("No speech was detected in this video.", 422, "NO_SPEECH");
+  }
+  return transcript;
 }
 
 export function getGeminiApiKey(): string {
   const apiKey = process.env.GEMINI_API_KEY?.trim();
-  if (!apiKey) throw new TranscriptionError("Transcription is not configured. Add GEMINI_API_KEY to the server environment.", 503);
+  if (!apiKey) throw new TranscriptionError("Transcription is not configured. Add GEMINI_API_KEY to the server environment.", 503, "CONFIGURATION_ERROR");
   return apiKey;
 }
 
@@ -79,13 +90,27 @@ export function parseGeminiTranscript(value: unknown, duration: number): Provide
 
 async function checkedJson(response: Response, genericError: string): Promise<Record<string, unknown>> {
   if (!response.ok) {
-    throw new TranscriptionError(genericError, response.status === 429 ? 429 : 502);
+    throw await toProviderError(response, genericError);
   }
   try {
     return await response.json() as Record<string, unknown>;
   } catch {
     throw new TranscriptionError("Gemini returned an unreadable response.");
   }
+}
+
+async function toProviderError(response: Response, genericError: string): Promise<TranscriptionError> {
+  const providerBody = await response.clone().text().catch(() => "");
+  console.error("Gemini transcription provider error", {
+    status: response.status,
+    body: providerBody.slice(0, 2000),
+  });
+  const credentialOrQuotaError = [401, 403, 429].includes(response.status);
+  return new TranscriptionError(
+    genericError,
+    response.status === 429 ? 429 : credentialOrQuotaError ? 503 : 502,
+    credentialOrQuotaError ? "QUOTA_OR_KEY_ERROR" : "PROVIDER_ERROR",
+  );
 }
 
 export async function requestGeminiTranscription(
@@ -110,7 +135,7 @@ export async function requestGeminiTranscription(
       body: JSON.stringify({ file: { display_name: "voxcut-audio.mp3" } }),
       signal: AbortSignal.timeout(120_000),
     });
-    if (!startResponse.ok) throw new TranscriptionError("Gemini could not start the secure audio upload.", startResponse.status === 429 ? 429 : 502);
+    if (!startResponse.ok) throw await toProviderError(startResponse, "Gemini could not start the secure audio upload.");
     const uploadUrl = startResponse.headers.get("x-goog-upload-url");
     if (!uploadUrl) throw new TranscriptionError("Gemini did not return an audio upload session.");
     const parsedUploadUrl = new URL(uploadUrl);
@@ -152,6 +177,7 @@ export async function requestGeminiTranscription(
     return await checkedJson(interactionResponse, "Gemini could not transcribe this video. Please try again.");
   } catch (error) {
     if (error instanceof TranscriptionError) throw error;
+    console.error("Gemini transcription request failed", error);
     throw new TranscriptionError("Gemini could not be reached to transcribe this video.");
   } finally {
     if (uploadedFileName) {
