@@ -193,3 +193,11 @@ Start with the registry boundary and `remove_silence`, then continue in the spec
 - Browser visual verification remains UNVERIFIED because Playwright is unavailable; build and lint pass, but only helper state was asserted automatically.
 - Verification: `npx tsc --noEmit` passed; `npm test` passed 32/32; `npm run lint` passed with 0 errors and two existing image warnings; `npm run build` passed; `git diff --check` passed with line-ending warnings only.
 - Next: B4, normalize kept intervals after restore/trim/split and cover invariants; then B5 labels/runtime.
+
+## FFmpeg duration coverage and Node module mode (2026-09-30)
+
+- Expanded production-renderer integration coverage to trimmed, split, and reordered kept-interval timelines, each with and without audio (six combinations). Every case sums the actual kept intervals and compares both FFprobe's rendered duration and the renderer's reported duration within 0.1 seconds; stream presence is also asserted.
+- Focused `node --experimental-strip-types --test lib/render.integration.test.mjs`: passed 8/8 including the separate reorder-color and cleanup tests.
+- Added `"type": "module"` to `package.json` as requested. With that change, `npm test` passed 36/36 and `npm run build` passed; Node's prior module-type warnings disappeared. Keeping the change.
+- The full required pre-commit checks (`npx tsc --noEmit`, `npm test`, `npm run lint`) passed; lint still has only the two existing landing-page warnings. `git diff --check` passed.
+- Next: B9 (wrapper fullscreen/custom controls and prevent native download UI).
