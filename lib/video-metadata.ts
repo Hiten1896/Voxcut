@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { resolveExecutable } from "@/lib/ffmpeg-path";
-import { parseVideoMetadataJson, type VideoMetadata } from "@/lib/video-metadata-format";
+import { resolveExecutable } from "./ffmpeg-path.ts";
+import { parseVideoMetadataJson, type VideoMetadata } from "./video-metadata-format.ts";
 
 const execFileAsync = promisify(execFile);
 const ffprobePath = resolveExecutable("ffprobe");

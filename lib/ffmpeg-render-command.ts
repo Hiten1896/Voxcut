@@ -1,4 +1,4 @@
-import type { VideoMetadata } from "@/lib/video-metadata-format";
+import type { VideoMetadata } from "./video-metadata-format.ts";
 
 export type RenderOptions = { resolution?: "source" | "720p" | "1080p" | "4K"; quality?: "Draft" | "High" | "Premium" };
 

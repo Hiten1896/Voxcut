@@ -4,15 +4,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { resolveExecutable } from "@/lib/ffmpeg-path";
-import { buildRenderCommand, type RenderOptions } from "@/lib/ffmpeg-render-command";
-import { getVideoMetadata } from "@/lib/video-metadata";
+import { resolveExecutable } from "./ffmpeg-path.ts";
+import { buildRenderCommand, type RenderOptions } from "./ffmpeg-render-command.ts";
+import { getVideoMetadata } from "./video-metadata.ts";
 import type { CutAction } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 const ffmpegPath = resolveExecutable("ffmpeg");
 const MIN_SEGMENT_SECONDS = 0.05;
-export type { RenderOptions } from "@/lib/ffmpeg-render-command";
+export type { RenderOptions } from "./ffmpeg-render-command.ts";
 
 function getKeepIntervals(cuts: CutAction[], duration: number) {
   const sorted = [...cuts].sort((a, b) => a.start - b.start);
