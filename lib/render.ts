@@ -5,13 +5,14 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 import { resolveExecutable } from "@/lib/ffmpeg-path";
+import { buildRenderCommand, type RenderOptions } from "@/lib/ffmpeg-render-command";
 import { getVideoMetadata } from "@/lib/video-metadata";
 import type { CutAction } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 const ffmpegPath = resolveExecutable("ffmpeg");
 const MIN_SEGMENT_SECONDS = 0.05;
-export type RenderOptions = { resolution?: "source" | "720p" | "1080p" | "4K"; quality?: "Draft" | "High" | "Premium" };
+export type { RenderOptions } from "@/lib/ffmpeg-render-command";
 
 function getKeepIntervals(cuts: CutAction[], duration: number) {
   const sorted = [...cuts].sort((a, b) => a.start - b.start);
@@ -53,24 +54,7 @@ export async function renderSelectedSegments(inputPath: string, selected: Array<
     }
   }
 
-  const filters: string[] = [];
-  keep.forEach((segment, index) => {
-    const start = segment.start.toFixed(6);
-    const end = segment.end.toFixed(6);
-    const resolution = options.resolution ?? "source";
-    const scale = resolution === "source" ? "setsar=1,format=yuv420p" : `scale=-2:${resolution === "720p" ? 720 : resolution === "1080p" ? 1080 : 2160},setsar=1,format=yuv420p`;
-    filters.push(`[0:v:0]trim=start=${start}:end=${end},setpts=PTS-STARTPTS,${scale}[v${index}]`);
-    if (metadata.hasAudio) filters.push(`[0:a:0]atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[a${index}]`);
-  });
-  const concatInputs = keep.map((_, index) => metadata.hasAudio ? `[v${index}][a${index}]` : `[v${index}]`).join("");
-  filters.push(`${concatInputs}concat=n=${keep.length}:v=1:a=${metadata.hasAudio ? 1 : 0}[vout]${metadata.hasAudio ? "[aout]" : ""}`);
-
-  const args = ["-hide_banner", "-v", "error", "-y", "-i", inputPath, "-filter_complex", filters.join(";"), "-map", "[vout]"];
-  if (metadata.hasAudio) args.push("-map", "[aout]");
-  const crf = options.quality === "Draft" ? "26" : options.quality === "Premium" ? "17" : "20";
-  args.push("-c:v", "libx264", "-preset", "veryfast", "-crf", crf);
-  if (metadata.hasAudio) args.push("-c:a", "aac", "-b:a", "192k");
-  args.push("-fps_mode", "vfr", "-movflags", "+faststart", temporaryOutput);
+  const args = buildRenderCommand(inputPath, keep, temporaryOutput, metadata, options);
 
   try {
     await execFileAsync(ffmpegPath, args, { timeout: 30 * 60_000, maxBuffer: 8 * 1024 * 1024 });
