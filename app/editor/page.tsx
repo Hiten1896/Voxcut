@@ -5,7 +5,7 @@ import { clearPendingUpload, getPendingUpload, setPendingUpload } from "@/lib/pe
 import { parseStoredVideoReference } from "@/lib/project-media";
 import { isAllowedVideoUpload } from "@/lib/security";
 import type { Transcript } from "@/lib/types";
-import { addKeepSegment, cutsFromKeepSegments, keepSegmentsFromCuts, splitKeepSegment, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
+import { addKeepSegment, cutsFromKeepSegments, getPlaybackBoundary, getTimelineDuration, keepSegmentsFromCuts, moveKeepSegment, sourceTimeAtTimelineTime, splitKeepSegment, timelineTimeAtSourceTime, trimKeepSegment, validateKeepSegments, type KeepSegment } from "@/lib/edit-decision-list";
 import type { TranscriptHighlight } from "@/lib/highlight-detection";
 
 type HistoryItem = {
@@ -55,6 +55,7 @@ export default function EditorPage() {
   const [exportError, setExportError] = useState("");
   const [exportDownloadUrl, setExportDownloadUrl] = useState<string | null>(null);
   const initializedTimelineKeyRef = useRef<string | null>(null);
+  const playbackSegmentIdRef = useRef<string | null>(null);
   const trimDragRef = useRef<{
     id: string;
     edge: "start" | "end";
@@ -62,9 +63,12 @@ export default function EditorPage() {
     latest: KeepSegment[];
     left: number;
     width: number;
+    timelineStart: number;
+    timelineDuration: number;
   } | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [timelineZoom, setTimelineZoom] = useState(1);
   const [mediaReady, setMediaReady] = useState(false);
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [pendingFileLoaded, setPendingFileLoaded] = useState(false);
@@ -173,12 +177,18 @@ export default function EditorPage() {
   );
 
   const duration = selectedClip?.duration || 0;
-  const progressPct = duration > 0 ? Math.max(0, Math.min((currentTime / duration) * 100, 100)) : 0;
+  const timelineSegments = useMemo(
+    () => editSegments.length > 0 ? editSegments : duration > 0 ? (editPlan.length > 0 ? keepSegmentsFromCuts(editPlan, duration) : [{ id: "source", start: 0, end: duration }]) : [],
+    [duration, editPlan, editSegments],
+  );
+  const timelineDuration = getTimelineDuration(timelineSegments);
+  const timelineCurrentTime = timelineTimeAtSourceTime(timelineSegments, currentTime);
+  const progressPct = timelineDuration > 0 ? Math.max(0, Math.min((timelineCurrentTime / timelineDuration) * 100, 100)) : 0;
   const activeProjectId = useMemo(() => (authUser ? `project-${authUser.id.slice(0, 8)}` : "default-project"), [authUser]);
   const historyCountLabel = history.length === 1 ? "1 edit" : `${history.length} edits`;
   const timelineTicks = useMemo(
-    () => duration > 0 ? Array.from({ length: 6 }, (_, index) => duration * index / 5) : [],
-    [duration],
+    () => timelineDuration > 0 ? Array.from({ length: 6 }, (_, index) => timelineDuration * index / 5) : [],
+    [timelineDuration],
   );
   const currentTranscript = selectedClip?.videoId === transcriptionVideoId ? transcript : null;
   const currentTranscriptionStatus = selectedClip?.videoId === transcriptionVideoId ? transcriptionStatus : "not_started";
@@ -188,46 +198,16 @@ export default function EditorPage() {
     (segment) => currentTime >= segment.start && currentTime <= segment.end,
   ) ?? -1;
 
-  const timelineSegments = useMemo(() => {
-    if (!duration) return [{ start: 0, end: 0, kept: true }];
-    if (editSegments.length > 0) return editSegments.map((segment) => ({ ...segment, kept: true }));
-    if (editPlan.length === 0) return [{ start: 0, end: duration, kept: true }];
-
-    const sortedCuts = [...editPlan].sort((a, b) => a.start - b.start);
-    const segments: Array<{ start: number; end: number; kept: boolean }> = [];
-    let cursor = 0;
-
-    sortedCuts.forEach((cut) => {
-      const safeStart = Math.max(0, Math.min(cut.start, duration));
-      const safeEnd = Math.max(safeStart, Math.min(cut.end, duration));
-
-      if (cursor < safeStart) {
-        segments.push({ start: cursor, end: safeStart, kept: true });
-      }
-
-      if (safeEnd > cursor) {
-        segments.push({ start: safeStart, end: safeEnd, kept: false });
-      }
-
-      cursor = Math.max(cursor, safeEnd);
-    });
-
-    if (cursor < duration) {
-      segments.push({ start: cursor, end: duration, kept: true });
-    }
-
-    return segments;
-  }, [duration, editPlan, editSegments]);
-
   const sceneBreakdown = useMemo(() => {
     if (!duration || timelineSegments.length === 0) return [];
-
-    return timelineSegments.map((segment, index) => ({
-      ...segment,
-      label: segment.kept ? `Scene ${index + 1}` : `Cut ${index + 1}`,
-      width: (((segment.end - segment.start) / Math.max(duration, 0.01)) * 100),
-    }));
-  }, [duration, timelineSegments]);
+    let timelineStart = 0;
+    return timelineSegments.map((segment, index) => {
+      const length = segment.end - segment.start;
+      const item = { ...segment, label: `Scene ${index + 1}`, timelineStart, width: (length / Math.max(timelineDuration, 0.01)) * 100 };
+      timelineStart += length;
+      return item;
+    });
+  }, [duration, timelineDuration, timelineSegments]);
 
   const commitTimeline = (next: KeepSegment[]) => {
     if (exportState === "rendering") { setStatus("Wait for the current render to finish before changing the timeline."); return; }
@@ -266,7 +246,9 @@ export default function EditorPage() {
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
-    trimDragRef.current = { id: segment.id, edge, initial: editSegments, latest: editSegments, left: rect.left, width: rect.width };
+    const segmentIndex = editSegments.findIndex((candidate) => candidate.id === segment.id);
+    const timelineStart = editSegments.slice(0, segmentIndex).reduce((total, item) => total + item.end - item.start, 0);
+    trimDragRef.current = { id: segment.id, edge, initial: editSegments, latest: editSegments, left: rect.left, width: rect.width, timelineStart, timelineDuration: getTimelineDuration(editSegments) };
     setSelectedEditSegmentId(segment.id);
     setOutputUrl(null); setExportDownloadUrl(null); setExportState("idle");
   };
@@ -274,7 +256,10 @@ export default function EditorPage() {
   const moveTrimDrag = (event: React.PointerEvent<HTMLButtonElement>) => {
     const drag = trimDragRef.current;
     if (!drag) return;
-    const at = Math.max(0, Math.min(duration, ((event.clientX - drag.left) / drag.width) * duration));
+    const timelineAt = Math.max(0, Math.min(drag.timelineDuration, ((event.clientX - drag.left) / drag.width) * drag.timelineDuration));
+    const segment = drag.initial.find((candidate) => candidate.id === drag.id);
+    if (!segment) return;
+    const at = Math.max(segment.start, Math.min(segment.end, segment.start + timelineAt - drag.timelineStart));
     try {
       const next = trimKeepSegment(drag.initial, drag.id, drag.edge, at);
       drag.latest = next;
@@ -892,6 +877,15 @@ export default function EditorPage() {
     }
 
     if (video.paused) {
+      const currentSegment = timelineSegments.find((segment) => video.currentTime >= segment.start && video.currentTime < segment.end);
+      const segment = currentSegment ?? timelineSegments[0];
+      if (segment) {
+        playbackSegmentIdRef.current = segment.id;
+        if (!currentSegment) {
+          video.currentTime = segment.start;
+          setCurrentTime(segment.start);
+        }
+      }
       try {
         await video.play();
       } catch {
@@ -910,9 +904,15 @@ export default function EditorPage() {
 
     if (video.readyState < HTMLMediaElement.HAVE_METADATA || !Number.isFinite(video.duration)) return;
     const safeTime = Math.max(0, Math.min(nextTime, video.duration));
-    video.currentTime = safeTime;
-    setCurrentTime(safeTime);
+    const active = timelineSegments.find((segment) => safeTime >= segment.start && safeTime < segment.end);
+    const next = timelineSegments.find((segment) => segment.start > safeTime);
+    const targetTime = active ? safeTime : next?.start ?? timelineSegments[timelineSegments.length - 1]?.end ?? safeTime;
+    video.currentTime = targetTime;
+    playbackSegmentIdRef.current = (active ?? next ?? timelineSegments[timelineSegments.length - 1])?.id ?? null;
+    setCurrentTime(targetTime);
   };
+
+  const handleTimelineScrub = (timelineTime: number) => handleScrub(sourceTimeAtTimelineTime(timelineSegments, timelineTime));
 
   const seekBy = (offset: number) => {
     const video = videoRef.current;
@@ -1049,7 +1049,24 @@ export default function EditorPage() {
                       onLoadStart={() => setMediaReady(false)}
                       onTimeUpdate={(e) => {
                         const time = e.currentTarget.currentTime;
-                        if (Number.isFinite(time)) setCurrentTime(time);
+                        if (!Number.isFinite(time)) return;
+                        if (isPlaying) {
+                          const boundary = getPlaybackBoundary(timelineSegments, time, playbackSegmentIdRef.current);
+                          if (boundary.type === "seek") {
+                            playbackSegmentIdRef.current = boundary.segmentId ?? null;
+                            e.currentTarget.currentTime = boundary.time;
+                            setCurrentTime(boundary.time);
+                            return;
+                          }
+                          if (boundary.type === "end") {
+                            playbackSegmentIdRef.current = boundary.segmentId ?? null;
+                            e.currentTarget.pause();
+                            e.currentTarget.currentTime = boundary.time;
+                            setCurrentTime(boundary.time);
+                            return;
+                          }
+                        }
+                        setCurrentTime(time);
                       }}
                       onLoadedMetadata={(e) => {
                         const video = e.currentTarget;
@@ -1060,6 +1077,7 @@ export default function EditorPage() {
                         }
                         setClips((previous) => previous.map((clip) => clip.id === selectedClip.id ? { ...clip, duration: actualDuration } : clip));
                         setCurrentTime(Number.isFinite(video.currentTime) ? video.currentTime : 0);
+                        playbackSegmentIdRef.current = timelineSegments.find((segment) => video.currentTime >= segment.start && video.currentTime < segment.end)?.id ?? timelineSegments[0]?.id ?? null;
                         video.volume = volume;
                         setMediaReady(true);
                         setOutputUrl(null);
@@ -1323,23 +1341,31 @@ export default function EditorPage() {
 
         <footer className="relative h-32 shrink-0 border-t border-[#3d494c]/30 bg-[#161c28]">
           <div className="relative flex h-6 items-center border-b border-[#3d494c]/30 bg-[#0e131f] px-4 text-[11px] text-[#bcc9cd] font-mono">
-            <div className="relative h-full w-full">
-              {timelineTicks.map((time, index) => (
-                <span key={index} className="absolute top-1/2 -translate-y-1/2" style={{ left: `${duration ? (time / duration) * 100 : 0}%`, transform: index === 0 ? "translateY(-50%)" : index === timelineTicks.length - 1 ? "translate(-100%, -50%)" : "translate(-50%, -50%)" }}>
-                  {formatTime(time)}
-                </span>
-              ))}
+            <div className="min-w-0 flex-1 overflow-x-auto">
+              <div className="relative h-full" style={{ minWidth: `max(100%, ${timelineDuration * 60 * timelineZoom}px)` }}>
+                {timelineTicks.map((time, index) => (
+                  <span key={index} className="absolute top-1/2 -translate-y-1/2" style={{ left: `${timelineDuration ? (time / timelineDuration) * 100 : 0}%`, transform: index === 0 ? "translateY(-50%)" : index === timelineTicks.length - 1 ? "translate(-100%, -50%)" : "translate(-50%, -50%)" }}>
+                    {formatTime(time)}
+                  </span>
+                ))}
+              </div>
             </div>
 
             <div className="flex items-center gap-3">
-              <span className="text-[#869397]">{duration > 0 ? `Timeline · ${formatTime(duration)}` : "Timeline unavailable"}</span>
+              <span className="text-[#869397]">{timelineDuration > 0 ? `Timeline · ${formatTime(timelineDuration)}` : "Timeline unavailable"}</span>
             </div>
           </div>
 
           <div className="flex h-[calc(100%-24px)] min-h-0 flex-col gap-1 p-1.5">
             <div className="flex h-7 shrink-0 items-center gap-1 overflow-x-auto text-[10px]">
+              <label className="flex shrink-0 items-center gap-1.5 px-1 text-[#bcc9cd]">Timeline zoom
+                <input type="range" aria-label="Timeline zoom" min={0.5} max={4} step={0.25} value={timelineZoom} onChange={(event) => setTimelineZoom(Number(event.currentTarget.value))} className="w-16 accent-[#4cd7f6]" />
+                <span className="font-mono">{timelineZoom.toFixed(2)}×</span>
+              </label>
               <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={() => trimSelected("start")} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Trim start +0.5s</button>
               <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={() => trimSelected("end")} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Trim end −0.5s</button>
+              <button type="button" disabled={editSegments.findIndex((segment) => segment.id === selectedEditSegmentId) <= 0 || exportState === "rendering"} onClick={() => commitTimeline(moveKeepSegment(editSegments, selectedEditSegmentId ?? "", -1))} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Move segment earlier</button>
+              <button type="button" disabled={editSegments.findIndex((segment) => segment.id === selectedEditSegmentId) < 0 || editSegments.findIndex((segment) => segment.id === selectedEditSegmentId) >= editSegments.length - 1 || exportState === "rendering"} onClick={() => commitTimeline(moveKeepSegment(editSegments, selectedEditSegmentId ?? "", 1))} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Move segment later</button>
               <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={splitSelected} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Split at playhead</button>
               <button type="button" disabled={!selectedEditSegmentId || exportState === "rendering"} onClick={deleteSelected} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Delete segment</button>
               <button type="button" disabled={!duration || exportState === "rendering"} onClick={restoreAtPlayhead} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Restore at playhead</button>
@@ -1347,10 +1373,11 @@ export default function EditorPage() {
               <button type="button" disabled={!timelineUndo.length || exportState === "rendering"} onClick={undoTimeline} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Undo</button>
               <button type="button" disabled={!timelineRedo.length || exportState === "rendering"} onClick={redoTimeline} className="rounded border border-[#3d494c]/30 px-1.5 py-1 text-[#bcc9cd] disabled:opacity-40">Redo</button>
             </div>
-            <div data-timeline-track="true" className="relative min-h-0 flex-1 overflow-hidden rounded bg-[#0e131f]" onClick={(event) => {
-              if (!duration || !mediaReady) return;
+            <div className="min-h-0 flex-1 overflow-x-auto rounded bg-[#0e131f]">
+            <div data-timeline-track="true" className="relative h-full overflow-hidden" style={{ minWidth: `max(100%, ${timelineDuration * 60 * timelineZoom}px)` }} onClick={(event) => {
+              if (!timelineDuration || !mediaReady) return;
               const rect = event.currentTarget.getBoundingClientRect();
-              handleScrub(Math.max(0, Math.min(duration, ((event.clientX - rect.left) / rect.width) * duration)));
+              handleTimelineScrub(Math.max(0, Math.min(timelineDuration, ((event.clientX - rect.left) / rect.width) * timelineDuration)));
             }}>
               <div className="pointer-events-none absolute bottom-0 top-0 z-20 flex flex-col items-center" style={{ left: `${progressPct}%` }}>
                 <div className="h-2.5 w-2.5 bg-[#4cd7f6]" style={{ clipPath: "polygon(0 0, 100% 0, 50% 100%)" }} />
@@ -1379,18 +1406,19 @@ export default function EditorPage() {
                         handleScrub(segment.start);
                       }}
                       className={`absolute bottom-1 top-1 overflow-hidden rounded border p-1 text-left ${selected ? "border-[#4cd7f6] bg-[#17415a]" : "border-[#3d494c]/50 bg-[#1a202c]"}`}
-                      style={{ left: `${duration ? (segment.start / duration) * 100 : 0}%`, width: `${segment.width}%` }}
+                      style={{ left: `${timelineDuration ? (segment.timelineStart / timelineDuration) * 100 : 0}%`, width: `${segment.width}%` }}
                     >
                       <span className="block truncate text-[10px] font-medium text-[#dde2f3]">Keep {formatTime(segment.start)}–{formatTime(segment.end)}</span>
                     </button>
                     {editSegment ? <>
-                      <button type="button" aria-label={`Drag trim start for segment ${index + 1}`} title="Drag to trim segment start" {...commonHandleProps} onPointerDown={(event) => commonHandleProps.onPointerDown(event, "start")} className="absolute top-1/2 z-10 h-9 w-2 -translate-x-1/2 -translate-y-1/2 touch-none rounded bg-[#4cd7f6] disabled:opacity-40" style={{ left: `${(segment.start / duration) * 100}%` }} />
-                      <button type="button" aria-label={`Drag trim end for segment ${index + 1}`} title="Drag to trim segment end" {...commonHandleProps} onPointerDown={(event) => commonHandleProps.onPointerDown(event, "end")} className="absolute top-1/2 z-10 h-9 w-2 -translate-x-1/2 -translate-y-1/2 touch-none rounded bg-[#4cd7f6] disabled:opacity-40" style={{ left: `${(segment.end / duration) * 100}%` }} />
+                      <button type="button" aria-label={`Drag trim start for segment ${index + 1}`} title="Drag to trim segment start" {...commonHandleProps} onPointerDown={(event) => commonHandleProps.onPointerDown(event, "start")} className="absolute top-1/2 z-10 h-9 w-2 -translate-x-1/2 -translate-y-1/2 touch-none rounded bg-[#4cd7f6] disabled:opacity-40" style={{ left: `${(segment.timelineStart / timelineDuration) * 100}%` }} />
+                      <button type="button" aria-label={`Drag trim end for segment ${index + 1}`} title="Drag to trim segment end" {...commonHandleProps} onPointerDown={(event) => commonHandleProps.onPointerDown(event, "end")} className="absolute top-1/2 z-10 h-9 w-2 -translate-x-1/2 -translate-y-1/2 touch-none rounded bg-[#4cd7f6] disabled:opacity-40" style={{ left: `${((segment.timelineStart + (segment.end - segment.start)) / timelineDuration) * 100}%` }} />
                     </> : null}
                   </div>
                 );
               })}
               {duration > 0 && sceneBreakdown.length === 0 ? <span className="p-2 text-[11px] text-[#bcc9cd]">Timeline unavailable.</span> : null}
+            </div>
             </div>
           </div>
         </footer>
