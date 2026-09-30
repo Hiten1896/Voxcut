@@ -69,3 +69,85 @@
 
 - The editor now holds a validated planner result as a pending plan and presents its operation, cut ranges, and reasons with explicit Apply/Cancel controls. It does not modify the edit timeline until Apply; applying uses the existing undo history. Applying is guarded against a source-video mismatch and an active render.
 - Browser-level Apply/Cancel verification remains UNVERIFIED because Playwright and an authenticated browser session are not available here.
+
+## Current project report — 2026-09-30
+
+### Feature status
+
+| Feature | Status | Evidence |
+|---|---|---|
+| Authentication/session tokens and owned-media API checks | PARTIAL | Existing unit coverage exercises token and ownership helpers. The recent authenticated reload flow was previously reported manually by the user, but it was not independently repeated in this implementation pass. |
+| Landing upload persistence across auth/navigation | PARTIAL | IndexedDB pending-file code exists and its expiration policy is unit-tested. Browser persistence and cross-tab behavior remain unverified here. |
+| MP4 upload validation and stored media | PARTIAL | Upload validation/signature checks are unit-tested. No authenticated browser upload was performed in this pass. |
+| Stored-media byte ranges and seeking support | REAL (API) | Automated range parsing and endpoint tests cover bounded/open/suffix and invalid ranges; authenticated browser seeking was not repeated here. |
+| FFmpeg cut rendering | REAL | Production `renderSelectedSegments` integration tests use generated audio/video and video-only fixtures; FFprobe checks duration and streams. Reordered output was decoded and sampled. |
+| Render failure cleanup | REAL | Integration test forces a missing FFmpeg executable and verifies no temporary/output artifact remains. |
+| Transcription provider integration | PARTIAL | Provider request/parsing and failure paths have automated coverage. A live Gemini request was attempted with an available environment key but network access to Google failed; no live transcript was produced. |
+| Gemini edit planning | PARTIAL | Structured response validation and mocked request/error cases are tested. Live planning was not attempted because live transcription yielded no genuine transcript. |
+| Timeline interval editing and source/project mapping | PARTIAL | EDL helpers and playback boundaries have unit tests. Interactive timeline behavior, trim dragging, undo/redo and zoom rendering remain unverified in a browser. |
+| Reordered timeline playback/export | PARTIAL | EDL ordering is tested and production FFmpeg output ordering was confirmed with generated color clips. Browser playback through reordered segments remains unverified. |
+| AI plan review with Apply/Cancel | PARTIAL | UI code validates and stages the plan, and Apply routes through undo history. Browser interaction has not been exercised. |
+| Caption downloads and highlight candidates | REAL (helpers/API) | Automated tests verify transcript-derived subtitle cues and highlight selection. Burned-in captions are not implemented. |
+| Phase 3 operation registry and requested operations | MISSING | No shared Zod-backed registry currently combines planner schemas, timeline application and FFmpeg implementations. `remove_silence`, `remove_filler_words`, speed, vertical crop, burned-in captions and zoom operations are not implemented. |
+| Playwright authenticated end-to-end suite | MISSING | Playwright/browser installation was attempted but package retrieval was unavailable; there is no E2E suite in this checkout. |
+
+### Verification record
+
+- `npm install`: passed (`up to date`).
+- `npx tsc --noEmit`: passed after the last code change.
+- `npm test`: 27 passed, 0 failed after the last code change. Running the FFmpeg integration suite requires permission for child-process creation in this environment.
+- `npm run lint`: passed with zero errors and two existing `<img>` optimization warnings in `app/page.tsx`.
+- `npm run build`: passed after the last code change; all app/API routes compiled.
+- `git diff --check`: passed after the last code change.
+- `node --experimental-strip-types --test lib/render.integration.test.mjs`: passed against the local FFmpeg/FFprobe installation; generated fixture duration, audio/video streams, reverse segment order and failure cleanup were checked.
+- Live Gemini: BLOCKED. The request returned the provider wrapper error that Gemini could not be reached. No live transcript/plan result exists.
+- Authenticated browser/E2E: UNVERIFIED in this pass. No browser automation package was installed, and no manual browser session was operated during this pass.
+- Frontend/visual interactions: UNVERIFIED. Automated unit coverage does not prove pointer behavior or UI rendering.
+
+### Honest completion estimate
+
+The baseline, authenticated media architecture, real media-range endpoint, production FFmpeg renderer, timeline helper logic, and plan preview are present. The complete product workflow is not verified end to end, and most Phase 3 operations plus the shared operation registry remain missing. A rough implementation estimate for the requested phases is **about 60%**, with a materially lower verified end-to-end percentage because live provider connectivity and browser automation were unavailable. This is not ready to be marked functionally complete.
+
+### Known limitations and technical debt
+
+- The repository has no `sample-video.mp4`; integration coverage uses generated synthetic fixtures, which do not establish compatibility or edit quality on the user's footage.
+- Playwright and a browser executable are unavailable from the current package environment, so authenticated/reload and pointer-driven tests are absent.
+- Google provider network reachability blocked live transcription and planning validation.
+- The plan preview and reordered timeline have not received browser-level visual/interaction QA.
+- The Phase 3 registry and all six requested operation families are missing.
+- Burned-in caption styling, subject-aware crop, speed changes, and timeline zoom edit operations are not implemented (timeline display zoom exists but is not a rendered zoom effect).
+- Upload/transcription/export limits and synchronous local processing remain constrained by the current single-instance local architecture; no queues/cloud storage/multi-instance guarantees are part of this work.
+- The two landing-page image optimization lint warnings remain.
+
+### HUMAN TODO
+
+- [ ] Restore outbound access to Google Generative Language and run a real transcription followed by a real edit-plan request using a short speech MP4.
+- [ ] Provide or select a representative `sample-video.mp4` containing speech and visual content; generated test media cannot establish quality on real footage.
+- [ ] Manually inspect the authenticated flow in the browser: sign in, upload, reload more than once, navigate away/back, play, seek, verify stored-media restoration, and confirm expired sessions are rejected.
+- [ ] Visually verify timeline trim/split/delete/reorder/undo/redo, plan Apply/Cancel, export download, and error states.
+- [ ] Judge transcript accuracy and edit quality on personal footage and provide product/UI priorities, including pricing.
+
+### Suggested next 10 tasks
+
+1. Restore package/browser downloads and add Playwright Chromium end-to-end coverage for authenticated upload, reload, seeking, editing, export and failure states; mock only Gemini and label it.
+2. Run the authenticated browser regression manually against the current session implementation and record actual observations.
+3. Add a shared Zod-backed operation registry that owns planner schemas, timeline apply logic and render dispatch; reject every unregistered operation.
+4. Implement and test rule-based `remove_silence` using genuine transcript timing gaps, preserving configurable padding around speech.
+5. Implement and test rule-based `remove_filler_words` from transcript word timestamps.
+6. Add speed edits with timeline duration mapping, FFmpeg `setpts`/audio handling, preview, export and tests.
+7. Add center 9:16 crop with an explicit subject-offset parameter and renderer tests.
+8. Add burned-in captions generated only from persisted transcript timings and a small set of caption styles.
+9. Add rendered zoom ranges and make export, playback and timeline duration agree on the operation model.
+10. Complete reliability UX and README verification: real upload/transcription/export progress, friendly media/duration errors, cleanup assertions, and successful checks on a real speech MP4.
+
+### Next implementation step
+
+Start with the registry boundary and `remove_silence`, then continue in the specified Phase 3 order. Keep Phase 1/2 browser and Gemini claims labeled unverified until their actual manual/live checks are recorded.
+
+### Documentation update verification
+
+- `npx tsc --noEmit`: passed.
+- `npm test`: 27 passed, 0 failed (FFmpeg integration tests launched successfully).
+- `npm run lint`: passed with 0 errors and 2 existing landing-page `<img>` warnings.
+- `npm run build`: passed; all 18 static pages and app/API routes compiled.
+- `git diff --check`: passed; Git reported only the existing LF-to-CRLF working-copy normalization warning for the two Markdown files.
